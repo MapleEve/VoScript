@@ -4,11 +4,29 @@
 
 这篇面向第一次部署的人。走完大约需要 15~30 分钟，其中大部分时间在等模型下载。
 
-## 0. 先决条件
+## 0. 选你的部署路径
 
-- 一台 Linux 主机，有 NVIDIA GPU（建议 ≥ 12 GB 显存；RTX 3090 / 4090 / A10 以上稳）
-- 安装好 Docker 24+
-- 安装好 **NVIDIA Container Toolkit**（没装 `docker run --gpus all` 会直接报错）：
+| 平台 | 路径 | 质量 | 备注 |
+| --- | --- | --- | --- |
+| Linux + NVIDIA GPU | docker-compose（下面主线） | 最好 | 推荐路径，本文档主流程 |
+| Windows 11 + WSL2 + NVIDIA GPU | docker-compose（在 WSL2 里走 Linux 流程） | 最好 | 见 [0.2](#02-windows-11--wsl2) |
+| macOS Apple Silicon（M1/M2/M3/M4） | **native venv，纯 CPU** | 可用但慢 | Docker Desktop 在 macOS **不能透传 GPU**，见 [0.3](#03-macos-apple-silicon) |
+| macOS Intel | native venv，纯 CPU | 可用但非常慢 | 同 macOS Apple Silicon，见 [0.3](#03-macos-apple-silicon) |
+
+CPU / 小显存场景**强烈建议**用 `WHISPER_MODEL=medium`（下面第 2 步会讲），速度差 3~4 倍而中文质量可接受。
+
+### HuggingFace 准备（所有平台都要）
+
+- 在 <https://huggingface.co/settings/tokens> 创建一个 **read** 权限的 token（以 `hf_` 开头）—— **什么时候建都行**，和下面的授权不冲突。
+- 在 <https://huggingface.co/pyannote/speaker-diarization-3.1> 点 **Agree and access repository**。
+- 在 <https://huggingface.co/pyannote/segmentation-3.0> 也点一下同意。
+
+> token 和 gated 授权是**两件独立的事**，顺序无所谓，但**两步都做完**才能拉到 gated 权重：只有 token 没接受条款会 403，接受了条款没 token 会 401。
+
+## 0.1 Linux + NVIDIA GPU（主线路径）
+
+- Docker 24+
+- **NVIDIA Container Toolkit**（没装的话 compose 启动会报 `could not select device driver`）：
   ```bash
   # 以 Ubuntu 为例
   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
@@ -19,13 +37,88 @@
   sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
   sudo nvidia-ctk runtime configure --runtime=docker
   sudo systemctl restart docker
-  ```
-- 一个 HuggingFace account，并且：
-  1. 到 <https://huggingface.co/pyannote/speaker-diarization-3.1> 点 **Agree and access repository**
-  2. 到 <https://huggingface.co/pyannote/segmentation-3.0> 也点一下同意
-  3. 到 <https://huggingface.co/settings/tokens> 生成一个 **read** 权限的 token（以 `hf_` 开头）
 
-> 这两个模型是 gated 的，跳过这一步之后服务会卡在启动时下载。
+  # 验证
+  docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+  ```
+
+显存建议：
+- ≥ 12 GB → 直接跑默认 `large-v3`
+- 8~12 GB → 仍可跑 `large-v3`（实测约 9 GB），但和别的 GPU 任务抢显存要小心
+- < 8 GB → `WHISPER_MODEL=medium`
+
+然后跳到 [第 1 步](#1-克隆仓库)。
+
+## 0.2 Windows 11 + WSL2
+
+官方支持路径 = **WSL2 + NVIDIA Container Toolkit**。Docker Desktop 的 GPU passthrough 底层本身就是走 WSL2，所以等价。
+
+前置：
+- Windows 11 或 Windows 10 21H2+
+- 装了 WSL2 Ubuntu（`wsl --install -d Ubuntu`）
+- Windows 上装了 NVIDIA 驱动 ≥ 470
+- WSL2 里装了 Docker（要么直接 WSL2 里装 docker，要么在 Windows 装 Docker Desktop 并开启 "Use WSL 2 based engine" + "Enable integration with my default WSL distro"）
+
+之后**所有命令都在 WSL2 的 Ubuntu shell 里执行**，走 [0.1 Linux 的流程](#01-linux--nvidia-gpu主线路径)。验证：
+
+```bash
+# 在 WSL2 Ubuntu 里
+nvidia-smi                        # 应该能看到你的 NVIDIA 卡
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
+两个都过就跟 Linux 一样跑。
+
+## 0.3 macOS（Apple Silicon / Intel）
+
+**重要**：macOS 上的 Docker Desktop **不能透传 GPU**（无 CUDA、无 Metal），所以 docker-compose 路径在 macOS 上**只能跑 CPU**，跑 `large-v3` 基本不可用。
+走 **native venv + CPU** 路径，并且把模型降到 `medium`。
+
+前置：
+- Python 3.11（推荐 `brew install python@3.11`）
+- ffmpeg（`brew install ffmpeg`）
+- libsndfile（`brew install libsndfile`）
+- 至少 16 GB 内存（Apple Silicon 统一内存也算）
+
+```bash
+# 1. 克隆
+git clone https://github.com/MapleEve/openplaud-voice-transcribe.git
+cd openplaud-voice-transcribe
+
+# 2. 建 venv（在仓库根目录）
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+# 3. 装依赖（torch==2.4.1 在 macOS 上会自动装 CPU/MPS 版，不是 CUDA 版）
+pip install --upgrade pip
+pip install -r app/requirements.txt
+
+# 4. 配置环境变量
+export HF_TOKEN=hf_你的_token
+export API_KEY=$(openssl rand -hex 32)
+export DEVICE=cpu                 # macOS 必须 cpu（MPS 对 pyannote 支持不完整）
+export WHISPER_MODEL=medium       # CPU 跑 large-v3 太慢
+export DATA_DIR=$(pwd)/data
+mkdir -p "$DATA_DIR"
+
+# 记住这个 API_KEY，OpenPlaud(Maple) 要填一样的
+
+# 5. 启动
+cd app
+uvicorn main:app --host 0.0.0.0 --port 8780
+```
+
+预期性能（参考值）：
+- M2 Pro / M3 Pro + `medium` + 1 分钟音频 ≈ 30–60 秒
+- M1 / Intel + `medium` + 1 分钟音频 ≈ 1.5–3 分钟
+- 跑 `large-v3` CPU 版会慢 3~5 倍，**不建议**
+
+已知限制：
+- 不支持 docker-compose 路径
+- 不支持 MPS 加速（pyannote 3.1 在 MPS 上有未实现算子，会报错或悄悄回落 CPU）
+- 如果你有一台带 NVIDIA GPU 的 Linux / Windows 机器，强烈建议用那台跑服务，Mac 只当客户端
+
+macOS 跑起来之后的流程（配置、对接 OpenPlaud(Maple)）和下面一致，但 **跳过** docker 相关步骤。
 
 ## 1. 克隆仓库
 
@@ -46,6 +139,14 @@ cp .env.example .env
 HF_TOKEN=hf_你的_token
 API_KEY=这里填一串长随机串_例如_openssl_rand_hex_32
 ```
+
+如果你 GPU 显存不够（< 12 GB）或者你是 macOS / 纯 CPU 部署，把模型降一档：
+
+```env
+WHISPER_MODEL=medium
+```
+
+可选值：`tiny / base / small / medium / large-v3`。`medium` 在中文场景下质量损失小，速度大约快 3~4 倍。
 
 如果你在中国大陆网络，建议同时加上：
 
@@ -120,7 +221,13 @@ docker compose --env-file .env up -d --build
 → NVIDIA Container Toolkit 没装或者 Docker 没重启。回到第 0 步。
 
 ### 启动日志里看到 `403 Forbidden` 下载 pyannote 模型
-→ 没点同意 gated 模型条款，或者 `HF_TOKEN` 写错了。
+→ 没点同意 gated 模型条款（回到 [第 0 步的 HuggingFace 准备](#huggingface-准备所有平台都要)）。
+
+### 启动日志里看到 `401 Unauthorized` 下载 pyannote 模型
+→ `HF_TOKEN` 没填、写错了、或者过期了，检查 `.env`。
+
+### macOS 上跑起来了但巨慢
+→ 先确认 `DEVICE=cpu` 且 `WHISPER_MODEL=medium`。大模型 CPU 跑就是这么慢，考虑换到一台带 NVIDIA 卡的机器。
 
 ### `np.NaN was removed` 崩溃
 → `requirements.txt` 被改坏了、numpy 被升到了 2.x。保持 `numpy<2.0` 的 pin 不要动。

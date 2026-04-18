@@ -23,30 +23,78 @@
 ## 决策树：先判断环境
 
 ```
+检查 0：用户在什么系统？
+    $ uname -s
+    - Linux    → 继续走检查 1（GPU 分支）
+    - Darwin   → macOS 分支（见下方「macOS 路径」），跳过 docker-gpu 检查
+    - MINGW*/MSYS*/CYGWIN* → 用户可能在 Git Bash，真实部署目标多半是 WSL2。
+      先问清楚：
+        * "你希望部署到 WSL2 里吗？" → 让他进 WSL2，后续命令都在 WSL2 跑
+        * "你就是想在原生 Windows 上跑？" → 不支持，推 WSL2
+```
+
+### Linux / WSL2 分支
+
+```
 检查 1：有没有 NVIDIA GPU？
     $ nvidia-smi
     - 能输出 → 继续
-    - 找不到命令 → 告诉用户"本服务必须 GPU"，停
-    - 有卡但 CUDA 不可用 → 先修驱动
+    - 找不到命令 / CUDA 不可用 → 告诉用户"这条路径需要 NVIDIA GPU + 驱动"，
+      问他是否切到 macOS/CPU 分支，或修好驱动再来。
 
-检查 2：显存够不够？（建议 ≥ 12 GB）
+检查 2：显存够不够？
     $ nvidia-smi --query-gpu=memory.total --format=csv,noheader
-    - < 12 GB → 警告用户可能 OOM，但可以继续（large-v3 最小约 9 GB）
+    - ≥ 12 GB → 用默认 large-v3
+    - 8–12 GB → 也能跑 large-v3（实测 ~9 GB），提醒用户别和其他大模型抢卡
+    - < 8 GB → 在 .env 里设 WHISPER_MODEL=medium（速度 3~4x，质量差距可接受）
 
-检查 3：有没有 Docker + NVIDIA Container Toolkit？
-    $ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
+检查 3：Docker + NVIDIA Container Toolkit 可用吗？
+    $ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
     - 输出 GPU 信息 → OK
-    - 报错 "could not select device driver ..." → 装 nvidia-container-toolkit，看下面
+    - "could not select device driver ..." → 装 nvidia-container-toolkit（下面有脚本）
 
-检查 4：用户有没有 HF_TOKEN？
-    - 有 → 直接进下一步
-    - 没有 → 暂停。指导用户去：
-      1. https://huggingface.co/pyannote/speaker-diarization-3.1  点 Agree
-      2. https://huggingface.co/pyannote/segmentation-3.0  点 Agree
-      3. https://huggingface.co/settings/tokens  创建 read token
-      等用户把 token 粘给你。**不要**让用户把 token 贴到 git 或公开聊天里，
-      如果有风险提示他走私聊/终端粘贴。
+检查 4：用户的 HF_TOKEN 和 gated 授权都到位了吗？
+    HF token 和 gated 授权是**两件独立的事**，顺序无所谓，但两件都要齐。
+    - 用户有 token 并且已经接受 pyannote 两个仓库的条款 → 下一步
+    - 只有其中一项 → 补另一项：
+        * 缺 token：让用户去 https://huggingface.co/settings/tokens 建一个 read token
+        * 缺授权：让用户分别去
+            - https://huggingface.co/pyannote/speaker-diarization-3.1 → Agree
+            - https://huggingface.co/pyannote/segmentation-3.0 → Agree
+    - 都没有 → 两件一起补，顺序无所谓
+    **不要**让用户把 token 贴到 git、commit message 或公开聊天，优先走
+    私聊/终端粘贴。
 ```
+
+### macOS 路径（Docker Desktop 不能透传 GPU）
+
+Docker Desktop on macOS **无法把 GPU 透传进容器**（不管 CUDA 还是 Metal）。
+所以 macOS 上**不要**走 docker-compose，直接走 native venv + CPU：
+
+```
+检查 A：Python 3.11 可用？
+    $ python3.11 --version
+    - 可用 → 继续
+    - 不可用 → brew install python@3.11
+
+检查 B：ffmpeg / libsndfile 有吗？
+    $ which ffmpeg && which sndfile-info || brew install ffmpeg libsndfile
+
+检查 C：磁盘和内存
+    - 磁盘空余 ≥ 10 GB（模型权重 + 容器）
+    - RAM ≥ 16 GB（Apple Silicon 统一内存也算）
+
+检查 D：HF 授权（和 Linux 分支相同）
+```
+
+macOS 上**必须**设：
+- `DEVICE=cpu`（MPS 对 pyannote 3.1 支持不完整，别用）
+- `WHISPER_MODEL=medium`（CPU 跑 large-v3 太慢，不是"慢一点"而是"不可用"）
+
+并且显式告诉用户：
+> "这台 Mac 只能跑 CPU。1 分钟音频大约要 30 秒到 3 分钟不等，看 CPU 型号。
+> 如果你有一台带 NVIDIA 卡的 Linux 或 Windows（WSL2）机器，把服务部署在那台
+> 机器上会快 5~20 倍。"
 
 ## 安装 NVIDIA Container Toolkit（如果没装）
 
@@ -65,7 +113,7 @@ sudo systemctl restart docker
 
 其他发行版参考 [NVIDIA 官方文档](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)。
 
-## 部署步骤
+## 部署步骤（Linux / WSL2）
 
 ### 1. 选一个工作目录，克隆仓库
 
@@ -99,6 +147,12 @@ rm .env.bak
 **在改完之后**立刻向用户展示 `.env` 里的 `API_KEY`（只在这一次露出明文），
 让他把同一个 key 配到 OpenPlaud(Maple) 的"设置 → 转录"里。之后不要再把这个值
 打印到日志/聊天。
+
+**如果目标 GPU 显存 < 12 GB，或是 CPU / macOS 部署**，把模型降到 medium：
+
+```bash
+sed -i.bak "s|^WHISPER_MODEL=.*|WHISPER_MODEL=medium|" .env && rm .env.bak
+```
 
 **如果用户在中国大陆网络**，还要加一行镜像：
 
@@ -145,7 +199,91 @@ curl -sS -o /dev/null -w "%{http_code}\n" http://localhost:8780/api/voiceprints
 
 三个都符合预期 → 部署完成。
 
-## 验证 GPU 是真的用上了
+## 部署步骤（macOS，native venv）
+
+不走 docker-compose，手动起一个 venv 服务。所有命令都在 **仓库根目录** 执行。
+
+### 1. 克隆 + 装依赖
+
+```bash
+cd ~   # 或用户偏好位置
+git clone https://github.com/MapleEve/openplaud-voice-transcribe.git
+cd openplaud-voice-transcribe
+
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r app/requirements.txt
+# 注意：torch==2.4.1 在 macOS 上解析到 CPU/MPS wheel，不是 CUDA。不用改 pin。
+```
+
+### 2. 准备运行环境
+
+```bash
+# 数据目录
+export DATA_DIR="$(pwd)/data"
+mkdir -p "$DATA_DIR"
+
+# 密钥（向用户确认是否使用这个生成值）
+export API_KEY_VALUE=$(openssl rand -hex 32)
+export HF_TOKEN="${USER_SUPPLIED_HF_TOKEN:?need HF_TOKEN from user}"
+
+# macOS 必须的固定项
+export DEVICE=cpu
+export WHISPER_MODEL=medium    # 不要偷懒用 large-v3
+```
+
+把这些写成一个 `run.sh` 放仓库根目录，让用户以后用同一个脚本启动：
+
+```bash
+cat > run.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+source .venv/bin/activate
+export DATA_DIR="$(pwd)/data"
+export DEVICE=cpu
+export WHISPER_MODEL=medium
+# 下面两行由部署时写入，不要提交到 git
+export HF_TOKEN="__FILL_ME__"
+export API_KEY="__FILL_ME__"
+mkdir -p "$DATA_DIR"
+cd app
+exec uvicorn main:app --host 0.0.0.0 --port 8780
+EOF
+chmod +x run.sh
+
+# 把 token / key 真正写进去
+sed -i.bak "s|__FILL_ME__|${HF_TOKEN}|" run.sh    # 第一处 = HF_TOKEN
+sed -i.bak "s|__FILL_ME__|${API_KEY_VALUE}|" run.sh  # 第二处 = API_KEY
+rm run.sh.bak
+
+# 加到 .gitignore，防止泄漏
+grep -q '^run.sh$' .gitignore || echo 'run.sh' >> .gitignore
+```
+
+### 3. 启动 + 验证
+
+```bash
+./run.sh &    # 或者在 tmux / screen 里前台跑
+sleep 30      # 等模型首次下载（5 GB，慢的话可能要更久）
+
+# 健康检查
+curl -sf http://localhost:8780/healthz
+# → {"ok":true}
+
+curl -sS http://localhost:8780/api/voiceprints -H "Authorization: Bearer $API_KEY_VALUE"
+# → []
+```
+
+如果要做成**开机自启**，用户在 Apple Silicon Mac 上一般用 launchd。提供一份
+`~/Library/LaunchAgents/com.openplaud.voice-transcribe.plist` 示例，但**不要**
+替用户装上，让他自己决定。
+
+> 提醒用户：Mac 合盖 / 睡眠时这个服务会停。持续跑的话需要"保持清醒"或改用
+> 台式机。
+
+## 验证 GPU 是真的用上了（Linux / WSL2 部署）
 
 ```bash
 docker exec voice-transcribe python -c "import torch; print('cuda=', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"

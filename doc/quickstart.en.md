@@ -5,12 +5,38 @@
 This guide is for first-time deployers. Expect 15–30 minutes, most of it
 waiting for model weights to download.
 
-## 0. Prerequisites
+## 0. Pick your deployment path
 
-- A Linux host with an NVIDIA GPU (≥ 12 GB VRAM recommended; RTX 3090/4090/A10
-  or better is a safe bet).
-- Docker 24+.
-- **NVIDIA Container Toolkit** (without it, `docker run --gpus all` fails):
+| Platform | Path | Quality | Notes |
+| --- | --- | --- | --- |
+| Linux + NVIDIA GPU | docker-compose (main flow below) | Best | Recommended, the main path of this doc |
+| Windows 11 + WSL2 + NVIDIA GPU | docker-compose (Linux flow inside WSL2) | Best | See [0.2](#02-windows-11--wsl2) |
+| macOS Apple Silicon (M1/M2/M3/M4) | **native venv, CPU-only** | Usable but slow | Docker Desktop on macOS **cannot pass through the GPU**; see [0.3](#03-macos-apple-silicon--intel) |
+| macOS Intel | native venv, CPU-only | Usable but very slow | Same as Apple Silicon; see [0.3](#03-macos-apple-silicon--intel) |
+
+CPU / low-VRAM deployments: **use `WHISPER_MODEL=medium`** (covered in step 2).
+It's 3–4× faster than `large-v3` and quality stays acceptable, especially for
+Chinese and English.
+
+### HuggingFace prep (all platforms)
+
+- Create a **read** token at <https://huggingface.co/settings/tokens> (starts
+  with `hf_`). Tokens are account-level — **you can create it any time,
+  order doesn't matter**.
+- Click **Agree and access repository** at
+  <https://huggingface.co/pyannote/speaker-diarization-3.1>.
+- Do the same at <https://huggingface.co/pyannote/segmentation-3.0>.
+
+> Creating the token and accepting gated-model terms are **independent**.
+> Order doesn't matter, but **both** must be done to actually download the
+> weights: token without accepted terms → 403, accepted terms without token
+> → 401.
+
+## 0.1 Linux + NVIDIA GPU (main path)
+
+- Docker 24+
+- **NVIDIA Container Toolkit** (without it, compose fails with
+  `could not select device driver`):
   ```bash
   # Ubuntu example
   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
@@ -21,16 +47,99 @@ waiting for model weights to download.
   sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
   sudo nvidia-ctk runtime configure --runtime=docker
   sudo systemctl restart docker
-  ```
-- A HuggingFace account, and:
-  1. Click **Agree and access repository** at
-     <https://huggingface.co/pyannote/speaker-diarization-3.1>.
-  2. Do the same at <https://huggingface.co/pyannote/segmentation-3.0>.
-  3. Create a **read** token at <https://huggingface.co/settings/tokens>
-     (starts with `hf_`).
 
-> Both models are gated. If you skip this, the service will hang on first
-> boot trying to download them.
+  # verify
+  docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+  ```
+
+VRAM guidance:
+- ≥ 12 GB → default `large-v3`
+- 8–12 GB → `large-v3` still fits (~9 GB in practice), just don't share the
+  GPU with another heavy job
+- < 8 GB → set `WHISPER_MODEL=medium`
+
+Then jump to [step 1](#1-clone-the-repo).
+
+## 0.2 Windows 11 + WSL2
+
+The officially supported path is **WSL2 + NVIDIA Container Toolkit**.
+Docker Desktop's GPU passthrough is itself routed through WSL2 under the
+hood, so the two are equivalent.
+
+Prereqs:
+- Windows 11, or Windows 10 21H2+
+- WSL2 Ubuntu installed (`wsl --install -d Ubuntu`)
+- NVIDIA driver ≥ 470 on Windows
+- Docker available inside WSL2 (either install docker directly in WSL2, or
+  install Docker Desktop on Windows and enable "Use WSL 2 based engine" +
+  "Enable integration with my default WSL distro")
+
+From then on, **every command runs inside the WSL2 Ubuntu shell**. Follow
+[0.1 Linux](#01-linux--nvidia-gpu-main-path). Verify:
+
+```bash
+# inside WSL2 Ubuntu
+nvidia-smi                        # should see your NVIDIA GPU
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
+If both work, the Linux flow applies verbatim.
+
+## 0.3 macOS (Apple Silicon / Intel)
+
+**Important**: Docker Desktop on macOS **cannot pass a GPU into containers**
+(no CUDA, no Metal). The docker-compose path on macOS is CPU-only and
+`large-v3` is effectively unusable there. Use **native venv + CPU** and
+drop the model to `medium`.
+
+Prereqs:
+- Python 3.11 (recommend `brew install python@3.11`)
+- ffmpeg (`brew install ffmpeg`)
+- libsndfile (`brew install libsndfile`)
+- 16 GB RAM or more (Apple Silicon unified memory counts)
+
+```bash
+# 1. clone
+git clone https://github.com/MapleEve/openplaud-voice-transcribe.git
+cd openplaud-voice-transcribe
+
+# 2. create venv at the repo root
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+# 3. install deps (on macOS, torch==2.4.1 resolves to the CPU/MPS wheel, not CUDA)
+pip install --upgrade pip
+pip install -r app/requirements.txt
+
+# 4. set env vars
+export HF_TOKEN=hf_your_token
+export API_KEY=$(openssl rand -hex 32)
+export DEVICE=cpu                 # macOS must be cpu (pyannote's MPS support is incomplete)
+export WHISPER_MODEL=medium       # large-v3 on CPU is too slow
+export DATA_DIR=$(pwd)/data
+mkdir -p "$DATA_DIR"
+
+# Note this API_KEY — OpenPlaud(Maple) needs the exact same value
+
+# 5. launch
+cd app
+uvicorn main:app --host 0.0.0.0 --port 8780
+```
+
+Expected performance (ballpark):
+- M2 Pro / M3 Pro + `medium` + 1 minute of audio ≈ 30–60 s
+- M1 / Intel + `medium` + 1 minute of audio ≈ 1.5–3 min
+- `large-v3` on CPU is 3–5× slower. **Not recommended.**
+
+Known limitations:
+- Docker-compose path is not supported on macOS
+- No MPS acceleration (pyannote 3.1 has unimplemented ops on MPS, either
+  errors or silently falls back to CPU)
+- If you have access to a Linux / Windows host with an NVIDIA GPU, run the
+  service there and use Mac as the client
+
+Everything after this point (config, wiring into OpenPlaud(Maple)) is the
+same, just **skip every docker step**.
 
 ## 1. Clone the repo
 
@@ -51,6 +160,17 @@ Edit `.env`. At minimum fill in:
 HF_TOKEN=hf_your_token
 API_KEY=a_long_random_string_e.g._openssl_rand_hex_32
 ```
+
+If you're short on VRAM (< 12 GB), or deploying on macOS / CPU-only, drop
+the model one size:
+
+```env
+WHISPER_MODEL=medium
+```
+
+Choices: `tiny / base / small / medium / large-v3`. `medium` gives a
+~3–4× speed-up with only a small quality drop, especially for Chinese and
+English.
 
 If you are on a China network, also add:
 
@@ -128,7 +248,16 @@ Model weights in `./models/` are cached, rebuild won't redownload them.
 → NVIDIA Container Toolkit missing or Docker wasn't restarted. Redo step 0.
 
 ### `403 Forbidden` downloading pyannote models
-→ You didn't accept the gated-model terms, or `HF_TOKEN` is wrong.
+→ Gated-model terms not accepted. Revisit
+[HuggingFace prep in step 0](#huggingface-prep-all-platforms).
+
+### `401 Unauthorized` downloading pyannote models
+→ `HF_TOKEN` missing, wrong, or expired. Check `.env`.
+
+### macOS runs but is painfully slow
+→ Confirm `DEVICE=cpu` and `WHISPER_MODEL=medium`. Large models on CPU
+really are this slow — consider running the service on a Linux/Windows
+host with an NVIDIA GPU instead.
 
 ### Crashes with `np.NaN was removed`
 → Your `requirements.txt` has been edited and numpy upgraded to 2.x. Keep

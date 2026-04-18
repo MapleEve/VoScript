@@ -29,32 +29,86 @@ You must **NOT**:
 ## Decision tree: inspect the environment first
 
 ```
-Check 1: is there an NVIDIA GPU?
+Check 0: what OS is the user on?
+    $ uname -s
+    - Linux              → continue with check 1 (GPU branch)
+    - Darwin             → macOS branch (see "macOS path" below),
+                           skip the docker-gpu checks
+    - MINGW*/MSYS*/CYGWIN* → user is likely on Git Bash; the real target
+      is almost certainly WSL2. Ask:
+        * "Do you want to deploy inside WSL2?" → have them enter WSL2
+          and run every subsequent command there.
+        * "You want to run on native Windows?" → not supported, push
+          toward WSL2.
+```
+
+### Linux / WSL2 branch
+
+```
+Check 1: NVIDIA GPU present?
     $ nvidia-smi
     - works → continue
-    - command not found → tell the user "this service requires a GPU", stop
-    - GPU present but CUDA unavailable → fix driver first
+    - command not found / CUDA unavailable → tell the user "this path needs
+      an NVIDIA GPU + driver"; ask whether to switch to macOS/CPU path or
+      fix the driver first.
 
-Check 2: is there enough VRAM? (≥ 12 GB recommended)
+Check 2: enough VRAM?
     $ nvidia-smi --query-gpu=memory.total --format=csv,noheader
-    - < 12 GB → warn about potential OOM, but large-v3 needs ~9 GB so
-      continuing is acceptable
+    - ≥ 12 GB → default large-v3 is fine
+    - 8–12 GB → large-v3 still fits (~9 GB in practice); warn about GPU
+      contention with other heavy jobs
+    - < 8 GB → set WHISPER_MODEL=medium in .env (3–4× faster, acceptable
+      quality tradeoff)
 
-Check 3: Docker + NVIDIA Container Toolkit present?
-    $ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
+Check 3: Docker + NVIDIA Container Toolkit working?
+    $ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
     - GPU info printed → OK
     - "could not select device driver ..." → install nvidia-container-toolkit (below)
 
-Check 4: does the user have an HF_TOKEN?
-    - yes → proceed
-    - no → pause. Walk the user through:
-      1. https://huggingface.co/pyannote/speaker-diarization-3.1  → Agree
-      2. https://huggingface.co/pyannote/segmentation-3.0  → Agree
-      3. https://huggingface.co/settings/tokens  → create a read token
-      Wait for the user to paste the token. **Do not** ask them to paste
-      it into git or a public channel — if there's exposure risk, ask for
-      it in a terminal or private context.
+Check 4: HF_TOKEN and gated-model access both in place?
+    HF tokens and gated-model acceptance are **independent** — order
+    doesn't matter but both are required.
+    - User has a token AND has accepted both pyannote repos' terms → proceed
+    - Only one of them → fill in the missing half:
+        * missing token: https://huggingface.co/settings/tokens (read scope)
+        * missing acceptance:
+            - https://huggingface.co/pyannote/speaker-diarization-3.1 → Agree
+            - https://huggingface.co/pyannote/segmentation-3.0 → Agree
+    - Neither → do both, any order.
+    **Do not** have the user paste the token into git, a commit message,
+    or a public channel — prefer private / terminal paste.
 ```
+
+### macOS path (Docker Desktop can't pass through the GPU)
+
+Docker Desktop on macOS **cannot forward a GPU into a container** (neither
+CUDA nor Metal). So on macOS **skip docker-compose entirely** — use a
+native venv + CPU instead:
+
+```
+Check A: Python 3.11 available?
+    $ python3.11 --version
+    - yes → continue
+    - no  → brew install python@3.11
+
+Check B: ffmpeg / libsndfile installed?
+    $ which ffmpeg && which sndfile-info || brew install ffmpeg libsndfile
+
+Check C: disk + memory
+    - ≥ 10 GB free disk (model weights + caches)
+    - ≥ 16 GB RAM (Apple Silicon unified memory counts)
+
+Check D: HF acceptance (same as Linux branch)
+```
+
+On macOS you **must** set:
+- `DEVICE=cpu` (pyannote 3.1's MPS coverage is incomplete, don't use it)
+- `WHISPER_MODEL=medium` (large-v3 on CPU isn't "slow", it's "unusable")
+
+And tell the user explicitly:
+> "This Mac will run CPU-only. A minute of audio takes 30 s to 3 min
+> depending on the chip. If you have a Linux or Windows (WSL2) host with
+> an NVIDIA GPU, deploying the service there will be 5–20× faster."
 
 ## Installing NVIDIA Container Toolkit (if missing)
 
@@ -73,7 +127,7 @@ sudo systemctl restart docker
 
 Other distros: see [NVIDIA's official docs](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 
-## Deployment steps
+## Deployment steps (Linux / WSL2)
 
 ### 1. Pick a working directory and clone
 
@@ -108,6 +162,13 @@ rm .env.bak
 so they can paste the same key into OpenPlaud(Maple)'s
 "Settings → Transcription". After that moment, never echo this value
 back to logs or chat.
+
+**If the target has < 12 GB VRAM, or is a CPU / macOS deployment**,
+drop the model to medium:
+
+```bash
+sed -i.bak "s|^WHISPER_MODEL=.*|WHISPER_MODEL=medium|" .env && rm .env.bak
+```
 
 **If the user is on a China network**, also add the HF mirror:
 
@@ -156,7 +217,94 @@ curl -sS -o /dev/null -w "%{http_code}\n" http://localhost:8780/api/voiceprints
 
 All three pass → deployment done.
 
-## Verify the GPU is actually in use
+## Deployment steps (macOS, native venv)
+
+No docker-compose on macOS — start the service from a Python venv.
+All commands run from the **repo root**.
+
+### 1. Clone + install deps
+
+```bash
+cd ~   # or wherever the user prefers
+git clone https://github.com/MapleEve/openplaud-voice-transcribe.git
+cd openplaud-voice-transcribe
+
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r app/requirements.txt
+# Note: on macOS, torch==2.4.1 resolves to the CPU/MPS wheel, not CUDA.
+# Don't relax the pin.
+```
+
+### 2. Prepare the runtime env
+
+```bash
+# data directory
+export DATA_DIR="$(pwd)/data"
+mkdir -p "$DATA_DIR"
+
+# credentials (confirm the generated value with the user)
+export API_KEY_VALUE=$(openssl rand -hex 32)
+export HF_TOKEN="${USER_SUPPLIED_HF_TOKEN:?need HF_TOKEN from user}"
+
+# macOS hard requirements
+export DEVICE=cpu
+export WHISPER_MODEL=medium    # do NOT use large-v3
+```
+
+Bundle this into a `run.sh` at the repo root so the user can restart the
+service the same way later:
+
+```bash
+cat > run.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+source .venv/bin/activate
+export DATA_DIR="$(pwd)/data"
+export DEVICE=cpu
+export WHISPER_MODEL=medium
+# The two lines below are filled in at deploy time — do NOT commit them.
+export HF_TOKEN="__FILL_ME__"
+export API_KEY="__FILL_ME__"
+mkdir -p "$DATA_DIR"
+cd app
+exec uvicorn main:app --host 0.0.0.0 --port 8780
+EOF
+chmod +x run.sh
+
+# Now actually fill in the token and key
+sed -i.bak "s|__FILL_ME__|${HF_TOKEN}|" run.sh     # first occurrence = HF_TOKEN
+sed -i.bak "s|__FILL_ME__|${API_KEY_VALUE}|" run.sh   # second = API_KEY
+rm run.sh.bak
+
+# gitignore it so it can never leak
+grep -q '^run.sh$' .gitignore || echo 'run.sh' >> .gitignore
+```
+
+### 3. Start + verify
+
+```bash
+./run.sh &    # or run it foreground inside tmux/screen
+sleep 30      # wait for the first-time model download (~5 GB)
+
+curl -sf http://localhost:8780/healthz
+# → {"ok":true}
+
+curl -sS http://localhost:8780/api/voiceprints -H "Authorization: Bearer $API_KEY_VALUE"
+# → []
+```
+
+For boot-at-login, the idiomatic Apple Silicon answer is launchd. Offer a
+sample `~/Library/LaunchAgents/com.openplaud.voice-transcribe.plist` but
+**don't install it automatically** — let the user opt in.
+
+> Warn the user: the service stops when the Mac sleeps / the lid closes.
+> If it needs to stay up, either disable sleep ("keep awake") or move the
+> deployment to a desktop box.
+
+## Verify the GPU is actually in use (Linux / WSL2 deployments)
 
 ```bash
 docker exec voice-transcribe python -c "import torch; print('cuda=', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
