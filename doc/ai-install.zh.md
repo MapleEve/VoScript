@@ -53,6 +53,12 @@
     - 输出 GPU 信息 → OK
     - "could not select device driver ..." → 装 nvidia-container-toolkit（下面有脚本）
 
+检查 3.5：用户的 uid/gid 是 1000 吗？
+    $ id -u ; id -g
+    - 都是 1000 → 继续，容器默认 APP_UID=1000 就够
+    - 不是 1000 → 稍后在 .env 里追加 APP_UID=$(id -u) / APP_GID=$(id -g)，
+      或者部署完之后 sudo chown -R 1000:1000 宿主数据目录
+
 检查 4：用户的 HF_TOKEN 和 gated 授权都到位了吗？
     HF token 和 gated 授权是**两件独立的事**，顺序无所谓，但两件都要齐。
     - 用户有 token 并且已经接受 pyannote 两个仓库的条款 → 下一步
@@ -173,6 +179,32 @@ sed -i.bak "s|^WHISPER_MODEL=.*|WHISPER_MODEL=medium|" .env && rm .env.bak
 
 ```bash
 grep -q '^HF_ENDPOINT=' .env || echo 'HF_ENDPOINT=https://hf-mirror.com' >> .env
+```
+
+**如果用户的 uid 不是 1000**（见决策树检查 3.5），要么让容器跟用户 uid 一致：
+
+```bash
+UID_VAL=$(id -u); GID_VAL=$(id -g)
+[ "$UID_VAL" = "1000" ] || {
+    grep -q '^APP_UID=' .env && sed -i.bak "s|^APP_UID=.*|APP_UID=$UID_VAL|" .env || echo "APP_UID=$UID_VAL" >> .env
+    grep -q '^APP_GID=' .env && sed -i.bak "s|^APP_GID=.*|APP_GID=$GID_VAL|" .env || echo "APP_GID=$GID_VAL" >> .env
+    rm -f .env.bak
+}
+```
+
+或者把数据目录所有者改成 1000：
+
+```bash
+sudo chown -R 1000:1000 ./data ./models 2>/dev/null || true
+```
+
+**磁盘小的机器**可以把上传上限调低（默认 2 GiB），比如把上限压到 500 MiB：
+
+```bash
+grep -q '^MAX_UPLOAD_BYTES=' .env \
+  && sed -i.bak "s|^MAX_UPLOAD_BYTES=.*|MAX_UPLOAD_BYTES=524288000|" .env \
+  || echo 'MAX_UPLOAD_BYTES=524288000' >> .env
+rm -f .env.bak
 ```
 
 ### 3. 启动
@@ -304,6 +336,14 @@ curl -sS http://localhost:8780/api/voiceprints -H "Authorization: Bearer $API_KE
 
 > 提醒用户：Mac 合盖 / 睡眠时这个服务会停。持续跑的话需要"保持清醒"或改用
 > 台式机。
+
+## 验证容器不是 root 运行（0.2.0 新增）
+
+```bash
+docker exec voice-transcribe id
+# 期望：uid=1000(app) gid=1000(app) groups=1000(app)
+# 如果输出 uid=0(root) —— 说明镜像不是最新版，git pull + 重新 build。
+```
 
 ## 验证 GPU 是真的用上了（Linux / WSL2 部署）
 

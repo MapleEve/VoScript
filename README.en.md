@@ -54,7 +54,8 @@ endpoints when the user enrolls a speaker.
 - Stable HTTP contract consumed by OpenPlaud(Maple)'s
   [`voice-transcribe-provider.ts`](https://github.com/MapleEve/openplaud/blob/main/src/lib/transcription/providers/voice-transcribe-provider.ts)
   and [`voice-transcribe/client.ts`](https://github.com/MapleEve/openplaud/blob/main/src/lib/voice-transcribe/client.ts)
-- Optional Bearer / `X-API-Key` auth on every `/api/*` route
+- Optional Bearer / `X-API-Key` auth on every `/api/*` route (constant-time compare)
+- Container runs as a **non-root user**; uploads enforced by `MAX_UPLOAD_BYTES`; voiceprint DB is concurrency-safe with atomic writes. Full hardening list in [`doc/security.en.md`](./doc/security.en.md)
 - Minimal built-in web UI at `/` for manual testing
 
 ## 30-second start

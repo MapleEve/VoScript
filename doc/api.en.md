@@ -10,15 +10,18 @@ for file uploads.
 With `API_KEY` set, every request except the ones below must carry
 `Authorization: Bearer <API_KEY>` **or** `X-API-Key: <API_KEY>`:
 
-| Path | Public |
-| --- | --- |
-| `GET /` | ✅ bundled web UI |
-| `GET /healthz` | ✅ liveness probe |
-| `GET /static/*` | ✅ static assets |
-| `GET /docs` / `/redoc` / `/openapi.json` | ✅ FastAPI auto docs |
-| other `/api/*` | ❌ requires the key |
+| Path | Public | Match |
+| --- | --- | --- |
+| `GET /` | ✅ bundled web UI | exact |
+| `GET /healthz` | ✅ liveness probe | exact |
+| `GET /docs` / `/redoc` / `/openapi.json` | ✅ FastAPI auto docs | exact |
+| `GET /static/*` | ✅ static assets | `/static/` prefix |
+| other `/api/*` | ❌ requires the key | — |
 
-Missing or wrong key → `401 Unauthorized`.
+Missing or wrong key → `401 Unauthorized`. Key comparison uses
+`hmac.compare_digest` (constant-time). Since 0.2.0, `/docs`, `/redoc`,
+`/openapi.json` are **exact-match** public paths — `/docsXYZ` now
+returns 401.
 
 ## Job lifecycle
 
@@ -57,6 +60,21 @@ Response (200):
 ```json
 { "id": "tr_20260418_080205_ea79b7", "status": "queued" }
 ```
+
+**Upload size**: the server streams the upload in chunks and returns
+`413` the moment the total exceeds `MAX_UPLOAD_BYTES` (default 2 GiB):
+
+```json
+{ "detail": "Upload exceeds MAX_UPLOAD_BYTES (2147483648 bytes)" }
+```
+
+The partial file is deleted from `data/uploads/`. Lower the cap in
+`.env` if your disk is small (the value is in bytes).
+
+**Filename**: the multipart `filename` is reduced to
+`PurePosixPath(filename).name` before use. A client-supplied
+`filename=../../etc/passwd.wav` lands on disk as just
+`tr_<id>_passwd.wav`.
 
 Example:
 
@@ -190,6 +208,7 @@ Form fields: `speaker_name` (required), `speaker_id` (optional).
 | 400 | Missing or invalid request field |
 | 401 | Missing or wrong API key |
 | 404 | Unknown tr_id / speaker_id / missing embedding |
+| 413 | Upload exceeded `MAX_UPLOAD_BYTES` (default 2 GiB) — see `/api/transcribe` |
 | 500 | Server-side exception (check `docker logs voice-transcribe`) |
 
 Body shape:

@@ -65,6 +65,13 @@ Check 3: Docker + NVIDIA Container Toolkit working?
     - GPU info printed → OK
     - "could not select device driver ..." → install nvidia-container-toolkit (below)
 
+Check 3.5: is the user's uid/gid 1000?
+    $ id -u ; id -g
+    - both 1000 → proceed, container's default APP_UID=1000 is fine
+    - something else → either add APP_UID=$(id -u) / APP_GID=$(id -g)
+      to .env, or after deploy run sudo chown -R 1000:1000 on the host
+      data directory
+
 Check 4: HF_TOKEN and gated-model access both in place?
     HF tokens and gated-model acceptance are **independent** — order
     doesn't matter but both are required.
@@ -190,6 +197,34 @@ sed -i.bak "s|^WHISPER_MODEL=.*|WHISPER_MODEL=medium|" .env && rm .env.bak
 
 ```bash
 grep -q '^HF_ENDPOINT=' .env || echo 'HF_ENDPOINT=https://hf-mirror.com' >> .env
+```
+
+**If the user's uid is not 1000** (see decision-tree check 3.5), either
+pin the container to their uid:
+
+```bash
+UID_VAL=$(id -u); GID_VAL=$(id -g)
+[ "$UID_VAL" = "1000" ] || {
+    grep -q '^APP_UID=' .env && sed -i.bak "s|^APP_UID=.*|APP_UID=$UID_VAL|" .env || echo "APP_UID=$UID_VAL" >> .env
+    grep -q '^APP_GID=' .env && sed -i.bak "s|^APP_GID=.*|APP_GID=$GID_VAL|" .env || echo "APP_GID=$GID_VAL" >> .env
+    rm -f .env.bak
+}
+```
+
+…or chown the host data directories to 1000:
+
+```bash
+sudo chown -R 1000:1000 ./data ./models 2>/dev/null || true
+```
+
+**Low-disk hosts** — lower the upload cap (default 2 GiB), e.g. to
+500 MiB:
+
+```bash
+grep -q '^MAX_UPLOAD_BYTES=' .env \
+  && sed -i.bak "s|^MAX_UPLOAD_BYTES=.*|MAX_UPLOAD_BYTES=524288000|" .env \
+  || echo 'MAX_UPLOAD_BYTES=524288000' >> .env
+rm -f .env.bak
 ```
 
 ### 3. Launch
@@ -326,6 +361,14 @@ sample `~/Library/LaunchAgents/com.openplaud.voice-transcribe.plist` but
 > Warn the user: the service stops when the Mac sleeps / the lid closes.
 > If it needs to stay up, either disable sleep ("keep awake") or move the
 > deployment to a desktop box.
+
+## Verify the container is not running as root (added in 0.2.0)
+
+```bash
+docker exec voice-transcribe id
+# expected: uid=1000(app) gid=1000(app) groups=1000(app)
+# if you see uid=0(root), the image is stale — git pull + rebuild.
+```
 
 ## Verify the GPU is actually in use (Linux / WSL2 deployments)
 

@@ -10,15 +10,17 @@
 设了 `API_KEY` 之后，除了下面这几个路径，所有请求都必须带
 `Authorization: Bearer <API_KEY>` **或** `X-API-Key: <API_KEY>`：
 
-| 路径 | 无需鉴权 |
-| --- | --- |
-| `GET /` | ✅ 返回内置 Web UI |
-| `GET /healthz` | ✅ 健康检查 |
-| `GET /static/*` | ✅ 静态资源 |
-| `GET /docs` / `/redoc` / `/openapi.json` | ✅ FastAPI 自动文档 |
-| 其它 `/api/*` | ❌ 必须带 key |
+| 路径 | 无需鉴权 | 匹配方式 |
+| --- | --- | --- |
+| `GET /` | ✅ 返回内置 Web UI | 精确匹配 |
+| `GET /healthz` | ✅ 健康检查 | 精确匹配 |
+| `GET /docs` / `/redoc` / `/openapi.json` | ✅ FastAPI 自动文档 | 精确匹配 |
+| `GET /static/*` | ✅ 静态资源 | `/static/` 前缀 |
+| 其它 `/api/*` | ❌ 必须带 key | — |
 
-没带、带错都会返回 `401 Unauthorized`。
+没带、带错都会返回 `401 Unauthorized`。鉴权比较采用 `hmac.compare_digest`
+常量时间，并且从 0.2.0 起 `/docs` 等路径是**精确匹配**——`/docsXYZ`
+现在会 401，不再漏网。
 
 ## 任务生命周期
 
@@ -57,6 +59,21 @@ curl http://localhost:8780/healthz
 ```json
 { "id": "tr_20260418_080205_ea79b7", "status": "queued" }
 ```
+
+**上传大小**：服务端分块读取，累计超过 `MAX_UPLOAD_BYTES`（默认 2 GiB）
+直接 `413`：
+
+```json
+{ "detail": "Upload exceeds MAX_UPLOAD_BYTES (2147483648 bytes)" }
+```
+
+同时把半截文件从 `data/uploads/` 删掉。用不了那么大空间的小机器可以在
+`.env` 里把 `MAX_UPLOAD_BYTES` 调小（单位字节）。
+
+**文件名**：multipart 里带的 `filename` 会先过
+`PurePosixPath(filename).name`，只保留最末一段——客户端传
+`filename=../../etc/passwd.wav` 也只会在磁盘上落为
+`tr_<id>_passwd.wav`。
 
 示例：
 
@@ -187,6 +204,7 @@ curl -X POST http://localhost:8780/api/voiceprints/enroll \
 | 400 | 请求字段缺失或格式错误 |
 | 401 | 缺 API key / key 不对 |
 | 404 | tr_id / speaker_id / embedding 不存在 |
+| 413 | 上传超过 `MAX_UPLOAD_BYTES`（默认 2 GiB），详见 `/api/transcribe` |
 | 500 | 服务端异常（看 `docker logs voice-transcribe`） |
 
 错误体结构：

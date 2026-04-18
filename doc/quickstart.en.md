@@ -181,7 +181,30 @@ HF_ENDPOINT=https://hf-mirror.com
 > Generate a strong API key: `openssl rand -hex 32`
 
 Every other env var has a sane default — see [`.env.example`](../.env.example)
-for the full list.
+for the full list. A few worth knowing about:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `MAX_UPLOAD_BYTES` | `2147483648` (2 GiB) | Per-request upload cap; requests past this get `HTTP 413` |
+| `APP_UID` | `1000` | uid the container runs as — must match the owner of `DATA_DIR` on the host |
+| `APP_GID` | `1000` | same, gid |
+
+### Host directory ownership
+
+The container runs as uid 1000 by default, so `DATA_DIR` (default
+`./data`) and `MODEL_CACHE_DIR` (default `./models`) must be writable
+by uid 1000 on the host. On most Linux distros the first regular user
+is uid 1000, so plain `mkdir -p data models` before `docker compose
+up` just works. If your user is a different uid, pick one:
+
+```bash
+# A. change the host dirs to 1000:1000
+sudo chown -R 1000:1000 ./data ./models
+
+# B. or tell the container to use YOUR uid
+echo "APP_UID=$(id -u)" >> .env
+echo "APP_GID=$(id -g)" >> .env
+```
 
 ## 3. Start the service
 

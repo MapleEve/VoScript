@@ -156,7 +156,26 @@ HF_ENDPOINT=https://hf-mirror.com
 
 > 生成强随机 API key：`openssl rand -hex 32`
 
-其他环境变量都有合理默认值，详见 [`.env.example`](../.env.example)。
+其他环境变量都有合理默认值，详见 [`.env.example`](../.env.example)。值得留意的几个：
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `MAX_UPLOAD_BYTES` | `2147483648`（2 GiB） | 单次上传最大字节数；超了直接 `HTTP 413` |
+| `APP_UID` | `1000` | 容器以此 uid 运行，必须和宿主 `DATA_DIR` 的所有者一致 |
+| `APP_GID` | `1000` | 同上，group id |
+
+### 宿主目录所有者
+
+容器默认用 uid 1000 跑，所以 `DATA_DIR`（默认 `./data`）和 `MODEL_CACHE_DIR`（默认 `./models`）**必须** 让 uid 1000 能写。大部分 Linux 发行版的首个普通用户刚好就是 1000，`docker compose up` 之前直接创建目录即可。如果你在别的 uid 下建的目录，两个办法二选一：
+
+```bash
+# A. 把宿主目录换成 1000:1000
+sudo chown -R 1000:1000 ./data ./models
+
+# B. 或者告诉容器跑成"你的" uid
+echo "APP_UID=$(id -u)" >> .env
+echo "APP_GID=$(id -g)" >> .env
+```
 
 ## 3. 启动服务
 
