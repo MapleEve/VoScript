@@ -35,11 +35,12 @@ _VEC_TABLE_DDL = (
 
 _CORE_DDL = """
 CREATE TABLE IF NOT EXISTS speakers (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
     sample_count INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    sample_spread REAL,   -- std of cos(sample_i, avg); NULL when sample_count <= 1
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speaker_samples (
@@ -53,6 +54,20 @@ CREATE TABLE IF NOT EXISTS speaker_avg (
     embedding   BLOB NOT NULL
 );
 """
+
+# Threshold tuning knobs (adaptive identification).
+# A freshly enrolled speaker has just one sample, so its averaged embedding is
+# the single noisy sample — we loosen the match threshold by this much to
+# accept the inevitable cross-session drift.
+_SINGLE_SAMPLE_RELAXATION = 0.05  # 0.75 - 0.05 = 0.70 by default
+# For multi-sample speakers we compute the std of cos(sample_i, avg). The
+# dynamic threshold relaxes by k * std, capped at _SPREAD_RELAXATION_CAP so a
+# pathologically noisy cluster can't pull the threshold arbitrarily low.
+_SPREAD_RELAXATION_K = 3.0
+_SPREAD_RELAXATION_CAP = 0.10
+# Absolute floor — never accept a match below this, regardless of per-speaker
+# relaxation. Guards against false positives from degenerate clusters.
+_ABSOLUTE_FLOOR = 0.60
 
 
 def _emb_to_blob(arr: np.ndarray) -> bytes:
@@ -104,6 +119,16 @@ class VoiceprintDB:
     def _init_schema(self):
         with self._lock:
             self._conn.executescript(_CORE_DDL)
+            # Lazy migration: older voscript installs had no sample_spread
+            # column. ADD COLUMN keeps existing rows; the value defaults to
+            # NULL which the identify() logic treats as "unknown → use base
+            # threshold" (still safer than guessing).
+            cols = {
+                row["name"] for row in self._conn.execute("PRAGMA table_info(speakers)")
+            }
+            if "sample_spread" not in cols:
+                logger.info("voiceprint_db: adding speakers.sample_spread column")
+                self._conn.execute("ALTER TABLE speakers ADD COLUMN sample_spread REAL")
 
     def _try_load_vec(self):
         """Attempt to load the sqlite-vec extension.  On failure log a warning
@@ -254,8 +279,16 @@ class VoiceprintDB:
             "DELETE FROM speaker_vecs WHERE speaker_id = ?", (speaker_id,)
         )
 
-    def _recompute_avg(self, speaker_id: str) -> np.ndarray:
-        """Recompute mean embedding from all samples for *speaker_id*."""
+    def _recompute_avg_and_spread(
+        self, speaker_id: str
+    ) -> tuple[np.ndarray, Optional[float]]:
+        """Recompute mean embedding + intra-cluster cosine spread.
+
+        Returns ``(avg_embedding, spread)`` where ``spread`` is the standard
+        deviation of the cosine similarities between each individual sample
+        and the recomputed mean. When the cluster has 1 or 0 samples the
+        spread is ``None`` (undefined — the caller stores NULL).
+        """
         rows = self._conn.execute(
             "SELECT embedding FROM speaker_samples WHERE speaker_id = ?",
             (speaker_id,),
@@ -263,7 +296,23 @@ class VoiceprintDB:
         if not rows:
             raise ValueError(f"No samples for speaker {speaker_id}")
         arrays = [_blob_to_emb(r["embedding"]) for r in rows]
-        return np.stack(arrays, axis=0).mean(axis=0).astype(np.float32)
+        stacked = np.stack(arrays, axis=0)
+        avg = stacked.mean(axis=0).astype(np.float32)
+        if len(arrays) < 2:
+            return avg, None
+        # Per-sample cosine to the mean, then std of those cosines.
+        a_norm = np.linalg.norm(avg)
+        if a_norm == 0:
+            return avg, None
+        sims = []
+        for s in arrays:
+            s_norm = np.linalg.norm(s)
+            if s_norm == 0:
+                continue
+            sims.append(float(np.dot(s, avg) / (s_norm * a_norm)))
+        if len(sims) < 2:
+            return avg, None
+        return avg, float(np.std(sims, ddof=0))
 
     # ------------------------------------------------------------------
     # Public API — mutations hold _lock and run in explicit transactions
@@ -285,8 +334,8 @@ class VoiceprintDB:
             self._conn.execute("BEGIN")
             try:
                 self._conn.execute(
-                    "INSERT INTO speakers(id, name, sample_count, created_at, updated_at) "
-                    "VALUES (?, ?, 1, ?, ?)",
+                    "INSERT INTO speakers(id, name, sample_count, sample_spread, "
+                    "created_at, updated_at) VALUES (?, ?, 1, NULL, ?, ?)",
                     (speaker_id, name, now, now),
                 )
                 self._conn.execute(
@@ -325,7 +374,7 @@ class VoiceprintDB:
                     "INSERT INTO speaker_samples(speaker_id, embedding) VALUES (?, ?)",
                     (speaker_id, _emb_to_blob(emb)),
                 )
-                avg_emb = self._recompute_avg(speaker_id)
+                avg_emb, spread = self._recompute_avg_and_spread(speaker_id)
                 self._conn.execute(
                     "INSERT OR REPLACE INTO speaker_avg(speaker_id, embedding) VALUES (?, ?)",
                     (speaker_id, _emb_to_blob(avg_emb)),
@@ -334,8 +383,12 @@ class VoiceprintDB:
                     "SELECT COUNT(*) FROM speaker_samples WHERE speaker_id = ?",
                     (speaker_id,),
                 ).fetchone()[0]
-                update_fields = "sample_count = ?, updated_at = ?"
-                params: list = [count, datetime.now().isoformat()]
+                update_fields = "sample_count = ?, sample_spread = ?, updated_at = ?"
+                params: list = [
+                    count,
+                    spread,  # None (NULL) for 0/1 samples, float otherwise
+                    datetime.now().isoformat(),
+                ]
                 if name is not None:
                     update_fields += ", name = ?"
                     params.append(name)
@@ -398,9 +451,23 @@ class VoiceprintDB:
     ) -> tuple[Optional[str], Optional[str], float]:
         """Return ``(speaker_id, speaker_name, similarity)`` for the closest match.
 
-        Returns ``(None, None, best_similarity)`` when no speaker exceeds
-        *threshold* or the database is empty.  ``best_similarity`` is always
-        the raw best score found (existing behaviour), even when below threshold.
+        The ``threshold`` argument is a **base** threshold. Per-candidate, we
+        compute an *effective* threshold that loosens for noisy clusters:
+
+        - ``sample_count == 1``: the averaged embedding is the single enroll
+          sample and has no spread estimate. Loosen the threshold by
+          ``_SINGLE_SAMPLE_RELAXATION`` (0.05 by default) to avoid the
+          "one-sample enrollment never matches anyone across sessions" failure
+          mode.
+        - ``sample_count >= 2``: loosen by ``k * sample_spread`` clamped at
+          ``_SPREAD_RELAXATION_CAP``. High intra-cluster variance → the speaker
+          sounds different across sessions → be more lenient. Low variance → keep
+          the strict base threshold.
+        - Never drop below ``_ABSOLUTE_FLOOR`` (0.60) regardless of relaxation.
+
+        Returns ``(None, None, best_similarity)`` when the best candidate is
+        below its effective threshold. ``best_similarity`` is always the raw
+        best score (existing behaviour), even when rejected.
         """
         query = embedding.flatten().astype(np.float32)
 
@@ -424,17 +491,61 @@ class VoiceprintDB:
             else:
                 best_id, best_sim = self._python_cosine_scan(query)
 
-        if best_id is None:
-            return None, None, 0.0
+            if best_id is None:
+                return None, None, 0.0
 
-        if best_sim >= threshold:
             spk_row = self._conn.execute(
-                "SELECT name FROM speakers WHERE id = ?", (best_id,)
+                "SELECT name, sample_count, sample_spread FROM speakers WHERE id = ?",
+                (best_id,),
             ).fetchone()
-            if spk_row is not None:
-                return best_id, spk_row["name"], best_sim
 
+        if spk_row is None:
+            # Race: vec table still references a row the caller deleted.
+            return None, None, best_sim
+
+        effective = self._effective_threshold(
+            base=threshold,
+            sample_count=int(spk_row["sample_count"]),
+            sample_spread=spk_row["sample_spread"],
+        )
+        logger.debug(
+            "identify: best=%s best_sim=%.4f base=%.3f effective=%.3f "
+            "(n=%d, spread=%s)",
+            best_id,
+            best_sim,
+            threshold,
+            effective,
+            spk_row["sample_count"],
+            spk_row["sample_spread"],
+        )
+
+        if best_sim >= effective:
+            return best_id, spk_row["name"], best_sim
         return None, None, best_sim
+
+    @staticmethod
+    def _effective_threshold(
+        base: float, sample_count: int, sample_spread: Optional[float]
+    ) -> float:
+        """Adaptive threshold per-candidate.
+
+        - 1 sample → base - _SINGLE_SAMPLE_RELAXATION (fixed relax)
+        - ≥2 samples, NULL spread (legacy row) → base
+        - ≥2 samples, known spread → base - min(k*spread, _SPREAD_RELAXATION_CAP)
+
+        Result is clamped to ``[_ABSOLUTE_FLOOR, base]``.
+        """
+        if sample_count <= 1 or sample_spread is None:
+            if sample_count <= 1:
+                dyn = base - _SINGLE_SAMPLE_RELAXATION
+            else:
+                dyn = base
+        else:
+            relax = min(
+                _SPREAD_RELAXATION_K * float(sample_spread), _SPREAD_RELAXATION_CAP
+            )
+            dyn = base - relax
+        return max(_ABSOLUTE_FLOOR, min(base, dyn))
 
     def _python_cosine_scan(self, query: np.ndarray) -> tuple[Optional[str], float]:
         """Full-scan cosine similarity over speaker_avg (fallback path)."""
@@ -465,32 +576,27 @@ class VoiceprintDB:
     def list_speakers(self) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, name, sample_count, created_at, updated_at FROM speakers"
+                "SELECT id, name, sample_count, sample_spread, created_at, updated_at "
+                "FROM speakers"
             ).fetchall()
-        return [
-            {
-                "id": r["id"],
-                "name": r["name"],
-                "sample_count": r["sample_count"],
-                "created_at": r["created_at"],
-                "updated_at": r["updated_at"],
-            }
-            for r in rows
-        ]
+        return [self._row_to_speaker(r) for r in rows]
 
     def get_speaker(self, speaker_id: str) -> Optional[dict]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, name, sample_count, created_at, updated_at "
+                "SELECT id, name, sample_count, sample_spread, created_at, updated_at "
                 "FROM speakers WHERE id = ?",
                 (speaker_id,),
             ).fetchone()
-        if row is None:
-            return None
+        return self._row_to_speaker(row) if row is not None else None
+
+    @staticmethod
+    def _row_to_speaker(row) -> dict:
         return {
             "id": row["id"],
             "name": row["name"],
             "sample_count": row["sample_count"],
+            "sample_spread": row["sample_spread"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }

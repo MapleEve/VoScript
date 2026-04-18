@@ -32,6 +32,19 @@ TRANSCRIPTIONS_DIR = DATA_DIR / "transcriptions"
 UPLOADS_DIR = DATA_DIR / "uploads"
 VOICEPRINTS_DIR = DATA_DIR / "voiceprints"
 
+
+# Base cosine-similarity threshold for voiceprint identify(). The actual
+# threshold per candidate is adaptive — see voiceprint_db.identify's docstring
+# for the per-speaker relaxation rules.
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+VOICEPRINT_THRESHOLD = _env_float("VOICEPRINT_THRESHOLD", 0.75)
+
 API_KEY = (os.getenv("API_KEY") or "").strip() or None
 # Paths that must stay open even when API_KEY auth is enabled. "/" is the
 # bundled web UI (browsers can't attach a Bearer header to a direct
@@ -170,7 +183,9 @@ def _run_transcription(
         jobs[job_id]["status"] = "identifying"
         speaker_map = {}
         for spk_label, embedding in result["speaker_embeddings"].items():
-            spk_id, spk_name, sim = voiceprint_db.identify(embedding)
+            spk_id, spk_name, sim = voiceprint_db.identify(
+                embedding, threshold=VOICEPRINT_THRESHOLD
+            )
             speaker_map[spk_label] = {
                 "matched_id": spk_id,
                 "matched_name": spk_name or spk_label,
