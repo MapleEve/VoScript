@@ -33,7 +33,13 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 VOICEPRINTS_DIR = DATA_DIR / "voiceprints"
 
 API_KEY = (os.getenv("API_KEY") or "").strip() or None
-PUBLIC_PATH_PREFIXES = ("/healthz", "/static/", "/docs", "/openapi.json", "/redoc")
+# Paths that must stay open even when API_KEY auth is enabled. The bundled
+# web UI at "/" has to be reachable from a browser (browsers can't attach a
+# Bearer header to a direct navigation); the UI's own fetch() calls to /api/*
+# still carry the key. /static/* serves the UI's assets; /healthz is a
+# liveness probe; /docs /redoc /openapi.json are FastAPI's auto docs.
+PUBLIC_EXACT_PATHS = {"/", "/healthz"}
+PUBLIC_PATH_PREFIXES = ("/static/", "/docs", "/openapi.json", "/redoc")
 
 for d in [TRANSCRIPTIONS_DIR, UPLOADS_DIR, VOICEPRINTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -56,7 +62,9 @@ async def require_api_key(request: Request, call_next):
         return await call_next(request)
 
     path = request.url.path
-    if path in ("/healthz",) or any(path.startswith(p) for p in PUBLIC_PATH_PREFIXES):
+    if path in PUBLIC_EXACT_PATHS or any(
+        path.startswith(p) for p in PUBLIC_PATH_PREFIXES
+    ):
         return await call_next(request)
 
     auth_header = request.headers.get("authorization", "")
