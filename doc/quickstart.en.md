@@ -26,11 +26,13 @@ Chinese and English.
 - Click **Agree and access repository** at
   <https://huggingface.co/pyannote/speaker-diarization-3.1>.
 - Do the same at <https://huggingface.co/pyannote/segmentation-3.0>.
+- And at <https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM>
+  (**added in 0.3.0** — used for speaker embeddings).
 
 > Creating the token and accepting gated-model terms are **independent**.
-> Order doesn't matter, but **both** must be done to actually download the
-> weights: token without accepted terms → 403, accepted terms without token
-> → 401.
+> Order doesn't matter, but all three model agreements + a valid token
+> must be in place to download weights: token without accepted terms →
+> 403, accepted terms without token → 401.
 
 ## 0.1 Linux + NVIDIA GPU (main path)
 
@@ -264,6 +266,28 @@ docker compose up -d --build
 ```
 
 Model weights in `./models/` are cached, rebuild won't redownload them.
+
+### Upgrading from 0.2.x to 0.3.0
+
+Two extra steps:
+
+1. **Accept one more HuggingFace gated model** at
+   <https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM> —
+   WeSpeaker replaces ECAPA-TDNN for speaker embeddings. Without the
+   click-through you'll get a 403 on first boot.
+2. **Re-enroll every existing voiceprint.** 0.3.0 uses a new embedding
+   space (WeSpeaker ≠ ECAPA, cosine distances between the two spaces
+   are meaningless), so:
+   - Quickest: `rm data/voiceprints/voiceprints.db`, let the container
+     rebuild it empty, then re-enroll from fresh transcriptions.
+   - Or per-speaker:
+     `curl -X DELETE -H "Authorization: Bearer $API_KEY" http://host:8780/api/voiceprints/<spk_id>`
+     for each enrolled id, then re-enroll.
+
+Legacy `index.json` + `.npy` files from 0.2.x are auto-imported into the
+new sqlite store on first boot — that doesn't lose data, but the
+imported embeddings are still ECAPA-based and won't match any
+WeSpeaker-generated queries. You still have to re-enroll.
 
 ## Troubleshooting
 

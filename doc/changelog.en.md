@@ -2,6 +2,74 @@
 
 [简体中文](./changelog.zh.md) | **English**
 
+## 0.3.0 — WhisperX alignment + sqlite voiceprint DB + WeSpeaker (2026-04-18)
+
+Three independent core upgrades released together.
+
+### WhisperX forced alignment
+- `app/pipeline.py`'s `transcribe` + `align_segments` now use `whisperx`'s
+  forced-alignment pipeline.
+- Each segment in the result carries an optional
+  `words: [{word, start, end, score}, …]` field — **word-level timestamps**.
+- Still CTranslate2-based internally, so the existing local
+  `/models/faster-whisper-<size>` cache continues to satisfy cold starts
+  without round-tripping HuggingFace.
+- First boot downloads a wav2vec2 alignment model (cached under `/cache`).
+  Alignment for Chinese audio can fail on some utterances — when that
+  happens we gracefully fall back to segment-level timestamps (no
+  `words[]`) instead of failing the whole job.
+- Version pin: `whisperx==3.1.6`. It is the only WhisperX series
+  compatible with our frozen `torch==2.4.1` + `pyannote==3.1.1`; later
+  releases require newer torch and newer pyannote. 3.1.x is marked
+  "yanked" on PyPI but pip installs yanked packages when the version is
+  pinned explicitly in requirements.
+
+### Voiceprint store moved to sqlite + sqlite-vec
+- `app/voiceprint_db.py` no longer uses `index.json + *.npy` files.
+- Single `voiceprints.db` (sqlite 3) + sqlite-vec's `vec0` virtual
+  table for vector similarity. Top-k nearest-neighbour search runs in
+  `O(log N)` through the extension.
+- All writes run inside sqlite transactions with WAL enabled; the old
+  hand-rolled `tempfile + os.replace` atomic writer is gone.
+- Concurrency: Python-level `threading.RLock` + sqlite WAL.
+- **Automatic migration** on first boot: if `index.json` + `.npy` files
+  exist, they're imported into sqlite in a single transaction and
+  `index.json` is renamed to `index.json.migrated.bak`. The `.npy`
+  files are left in place for rollback.
+- If sqlite-vec fails to load (build without the extension), falls back
+  to a Python-side cosine full scan.
+
+### WeSpeaker ResNet34 replaces ECAPA-TDNN
+- `pyannote/wespeaker-voxceleb-resnet34-LM` replaces speechbrain's ECAPA.
+- Dependency diet: `speechbrain` is no longer required. WeSpeaker's
+  wrapper class ships with `pyannote.audio`.
+- Embedding dimension goes from 192 (ECAPA) to ~256 (WeSpeaker).
+- **Breaking**: the new embedding space is not cosine-comparable with
+  ECAPA's. **Every voiceprint enrolled under 0.2.x has to be
+  re-enrolled** — comparing old ECAPA vectors against new WeSpeaker
+  queries yields essentially random cosine similarities.
+- **HF gated model**: accept the agreement at
+  <https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM>
+  before first use — same process as for speaker-diarization-3.1 and
+  segmentation-3.0.
+- The per-speaker chunk selection (≥1 s, top-10 longest, mean pooled)
+  is unchanged.
+
+### Upgrade-breaking changes
+- Bigger container image: WhisperX pulls wav2vec2 deps + the alignment
+  model weights (~1 GB extra cache on first run).
+- **Old voiceprints must be re-enrolled.** Either delete
+  `data/voiceprints/voiceprints.db` or `DELETE /api/voiceprints/{id}`
+  one by one, then re-enroll.
+- One more HuggingFace gated model to agree to (WeSpeaker).
+
+### Stays compatible
+- HTTP contract unchanged (`segments[i].words` is a new optional field
+  — old clients ignore it).
+- No new env vars.
+- Container name `voscript`, port, data-dir layout, non-root user, and
+  API_KEY enforcement all unchanged.
+
 ## 0.2.1 — Renamed to voscript (2026-04-18)
 
 Decoupled from OpenPlaud(Maple) — the service stands on its own, so it now

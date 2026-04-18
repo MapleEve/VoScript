@@ -106,7 +106,11 @@ curl -X POST http://localhost:8780/api/transcribe \
         "speaker_label": "SPEAKER_00",
         "speaker_id": "spk_...",
         "speaker_name": "张三",
-        "similarity": 0.8421
+        "similarity": 0.8421,
+        "words": [
+          { "word": "一边", "start": 0.02, "end": 0.35, "score": 0.93 },
+          { "word": "是",   "start": 0.35, "end": 0.48, "score": 0.88 }
+        ]
       }
     ]
   }
@@ -118,6 +122,10 @@ curl -X POST http://localhost:8780/api/transcribe \
 
 `speaker_id` 和 `speaker_name`：如果 `similarity ≥ 0.75`，服务会自动匹配上已登记的声纹；
 否则 `speaker_id = null`，`speaker_name = speaker_label`（如 `SPEAKER_00`）。
+
+**`words[]` 是 0.3.0 起新增的可选字段**（WhisperX forced alignment 输出）。
+每个字/词有独立的 `start`/`end`/`score`。中文对齐模型有时会失败——失败时这
+个字段缺失，不会阻塞任务完成。老客户端不认识这个字段时直接忽略即可。
 
 ### `GET /api/transcriptions` — 列出所有历史任务
 

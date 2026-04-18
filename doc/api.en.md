@@ -107,7 +107,11 @@ curl -X POST http://localhost:8780/api/transcribe \
         "speaker_label": "SPEAKER_00",
         "speaker_id": "spk_...",
         "speaker_name": "Alice",
-        "similarity": 0.8421
+        "similarity": 0.8421,
+        "words": [
+          { "word": "This", "start": 0.05, "end": 0.18, "score": 0.98 },
+          { "word": "is",   "start": 0.18, "end": 0.29, "score": 0.96 }
+        ]
       }
     ]
   }
@@ -121,6 +125,12 @@ enrollment or rename call.
 `speaker_id` / `speaker_name`: when `similarity ≥ 0.75` the service has
 auto-matched a registered voiceprint. Otherwise `speaker_id` is `null` and
 `speaker_name` falls back to the raw label (e.g. `SPEAKER_00`).
+
+**`words[]` is a new optional field added in 0.3.0** (WhisperX forced
+alignment output). Each entry carries its own `start`/`end`/`score`.
+Alignment for some Chinese utterances can fail; when it does, the key is
+simply absent from the segment, the job still finishes. Clients that
+don't recognize the field should just ignore it.
 
 ### `GET /api/transcriptions` — list past jobs
 

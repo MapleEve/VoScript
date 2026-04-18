@@ -45,9 +45,9 @@ AI agents deploying the service for a user: read the
 ## Features
 
 - **Async job pipeline**: `queued → converting → transcribing → identifying → completed`
-- **Chinese + multilingual transcription** (faster-whisper large-v3)
-- **Speaker diarization** (pyannote 3.1)
-- **Persistent voiceprints**: enroll once, auto-match in future recordings (cosine similarity ≥ 0.75)
+- **Chinese + multilingual transcription** (WhisperX + faster-whisper large-v3, **word-level timestamps** via forced alignment)
+- **Speaker diarization** (pyannote 3.1) + **WeSpeaker ResNet34** embeddings
+- **Persistent voiceprints**: enroll once, auto-match across future recordings (cosine similarity ≥ 0.75). sqlite + sqlite-vec under the hood — top-k nearest-neighbour search scales to thousands of speakers
 - **Stable HTTP contract**: `/api/transcribe`, `/api/jobs/{id}`, `/api/voiceprints*`, etc. — any HTTP client works
 - **Container runs as non-root**; all `/api/*` routes accept optional Bearer / `X-API-Key` auth (constant-time compare); uploads capped by `MAX_UPLOAD_BYTES`; voiceprint DB is concurrency-safe with atomic writes — full hardening list in [`doc/security.en.md`](./doc/security.en.md)
 - Minimal built-in web UI at `/` for manual testing

@@ -2,6 +2,44 @@
 
 **简体中文** | [English](./changelog.en.md)
 
+## 0.3.0 — WhisperX 强制对齐 + sqlite 声纹库 + WeSpeaker 升级 (2026-04-18)
+
+三个独立的核心组件升级，一起发布：
+
+### WhisperX 替换原来的自研对齐
+- `app/pipeline.py` 的 `transcribe` + `align_segments` 改用 `whisperx` 的 forced alignment 管线
+- 输出里每个 segment 多一个可选 `words: [{word, start, end, score}, ...]` 字段——**词级时间戳**
+- 内部还是 CTranslate2 + faster-whisper，所以原来本地 `/models/faster-whisper-<size>` 缓存依然生效，冷启动不回退到 HF 拉模型
+- 对齐模型（wav2vec2 一族）首次启动会下一个（缓存在 `/cache`）。对中文音频有时不可用——失败时自动降级回没有 `words[]` 的 segment 级结果，不整个失败
+- 版本 pin：`whisperx==3.1.6`（3.1.x 是唯一和我们 `torch==2.4.1` + `pyannote==3.1.1` 兼容的 WhisperX 系列；这些 release 在 PyPI 是 yanked 状态，但 pip 在 `requirements.txt` 里显式写版本号时仍会装）
+
+### 声纹库底层换成 sqlite + sqlite-vec
+- `app/voiceprint_db.py` 不再用 `index.json + *.npy` 的文件格式
+- 换成单个 `voiceprints.db`（sqlite 3）+ sqlite-vec 的 `vec0` 虚拟表做向量索引
+- 查询复杂度从 O(N) 线性扫 `.npy` 降到 vec0 的 top-k 近邻检索——几百上千个声纹毫无压力
+- 写入走 sqlite 原生事务，WAL 模式，不再需要我们自己手写 `os.replace` 原子替换
+- 并发安全：线程级 `RLock` + sqlite WAL 组合
+- **自动迁移**：第一次启动如果发现老的 `index.json` + `.npy` 文件，会一次性导入到 sqlite，然后把 `index.json` 改名成 `index.json.migrated.bak`。`.npy` 文件保留不动（可回滚）
+- sqlite-vec 加载失败时自动降级到 Python 侧余弦全扫（仍然可用，只是慢）
+
+### WeSpeaker ResNet34 替换 ECAPA-TDNN
+- `pyannote/wespeaker-voxceleb-resnet34-LM` 替换 speechbrain 的 ECAPA
+- 依赖简化：不再需要 `speechbrain` 包，WeSpeaker 的包装类本来就在 `pyannote.audio` 里
+- embedding 维度从 192 变成 ~256
+- **破坏性**：新的 embedding 空间和 ECAPA 的不兼容，**老版本的声纹需要重新登记**——同一个人用 0.2.x 的 ECAPA 生成的向量扔到 0.3.0 的 WeSpeaker 余弦对比里会拿到近乎随机的相似度
+- **HF 门禁**：这个模型也是 gated 的，首次使用前要去 <https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM> 点"Agree and access repository"，和之前的 speaker-diarization-3.1 / segmentation-3.0 同一套流程
+- 音频切分逻辑不变：每个说话人 ≥1s 的片段里挑最长的 10 段，做均值池化
+
+### 升级的破坏性变化
+- 容器镜像变大：WhisperX 额外带 wav2vec2 依赖 + 运行时下载的对齐模型（再加 ~1 GB 缓存）
+- **老声纹必须全部重新登记**——升级后直接删 `data/voiceprints/voiceprints.db`（或者一个个 `DELETE /api/voiceprints/{spk_xxx}`）然后重新 enroll
+- HF 需要多接受一个 gated 模型的条款（WeSpeaker）
+
+### 保持兼容
+- HTTP 合同完全不变（`segments[i].words` 是新增可选字段，老客户端忽略）
+- 环境变量没新增
+- 容器 `voscript` 名字、端口、数据目录结构、非 root 用户、API_KEY 鉴权全部不变
+
 ## 0.2.1 — 改名为 voscript (2026-04-18)
 
 解耦和 OpenPlaud(Maple) 的绑定——服务本身可以独立使用，因此改名：
