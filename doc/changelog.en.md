@@ -1,5 +1,7 @@
 # Changelog
 
+[简体中文](./changelog.zh.md) | **English**
+
 ## 0.1.0 — initial public release
 
 - First public release of the private transcription backend used by

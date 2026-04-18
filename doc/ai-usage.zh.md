@@ -1,0 +1,155 @@
+# 给 AI 使用的接入指南
+
+**简体中文** | [English](./ai-usage.en.md)
+
+> 这篇文档是写给 **AI agent / LLM** 看的。给人看的文档请看
+> [`quickstart.zh.md`](./quickstart.zh.md) 和 [`api.zh.md`](./api.zh.md)。
+>
+> 如果你是 AI，请把下面的内容整个读完再调接口。
+
+## 你是谁，这个服务是什么
+
+你是一个需要把音频转成带说话人名字的文字的 AI agent。这个服务
+(`openplaud-voice-transcribe`) 就是帮你做这件事的**有状态后端**，它：
+
+1. 接收音频 → 跑 whisper 转录 + pyannote 说话人分离 + ECAPA-TDNN 声纹提取
+2. 维护一个**持久化声纹库**，下次同一个人说话时自动把 `SPEAKER_XX` 标签
+   升级成真实姓名
+3. 让你在任务完成后**把 `SPEAKER_XX` 正式登记为某个人**，从此以后这个人
+   的声音都会被自动识别
+
+## 核心事实（最重要，务必记住）
+
+1. **处理是异步的**。`POST /api/transcribe` 只返回一个 job id，你**必须**
+   后续轮询 `/api/jobs/{id}` 直到 `status == "completed"` 或 `"failed"`。
+   不要 sleep 等待，要 poll。
+2. **短音频也可能要几十秒**。首次启动还要额外加上模型加载时间（可能 2+ 分钟）。
+   不要因为一次 poll 没完成就判定失败。
+3. **鉴权必须走 header，不是 query string**：
+   ```
+   Authorization: Bearer <API_KEY>
+   或
+   X-API-Key: <API_KEY>
+   ```
+4. **登记声纹时要用 `speaker_label`（原始 `SPEAKER_XX`），不是 `speaker_name`
+   （显示名）**。这是最容易踩的坑：当服务自动匹配到已有声纹时，
+   `speaker_name` 会变成"张三"，但 `speaker_label` 永远是 `SPEAKER_00`。
+   拿 `speaker_name` 去 enroll 必然返回 404。
+5. **`similarity >= 0.75` 才算匹配上**。低于这个阈值的 `speaker_id` 一定是 `null`，
+   `speaker_name` 会回落成 `SPEAKER_XX`。
+
+## 推荐调用流程
+
+```
+[你有音频]
+     │
+     ▼
+POST /api/transcribe           （拿到 job_id）
+     │
+     ▼
+GET /api/jobs/{job_id}          （每 2~5 秒一次，直到 completed/failed）
+     │
+     ▼
+解析 result.segments
+     │
+     ├── 用户已经在这条录音上给某个 SPEAKER_XX 贴了真名？
+     │       └── POST /api/voiceprints/enroll   （登记 / 更新）
+     │
+     └── 需要导出给下游？
+             └── GET /api/export/{tr_id}?format=srt|txt|json
+```
+
+## 伪代码模板
+
+```python
+import time, requests
+
+BASE = "http://host:8780"
+KEY = "<你的 API key>"
+H = {"Authorization": f"Bearer {KEY}"}
+
+# 1. 提交
+with open("meeting.wav", "rb") as f:
+    job = requests.post(
+        f"{BASE}/api/transcribe",
+        headers=H,
+        files={"file": f},
+        data={"language": "zh", "max_speakers": "4"},
+    ).json()
+
+job_id = job["id"]
+
+# 2. 轮询
+while True:
+    r = requests.get(f"{BASE}/api/jobs/{job_id}", headers=H).json()
+    if r["status"] == "completed":
+        result = r["result"]
+        break
+    if r["status"] == "failed":
+        raise RuntimeError(r.get("error", "unknown"))
+    time.sleep(3)
+
+# 3. 处理结果
+for seg in result["segments"]:
+    # 展示用 speaker_name，登记要用 speaker_label
+    print(f"[{seg['start']:.1f}s] {seg['speaker_name']}: {seg['text']}")
+
+# 4. 登记（假设用户告诉你 SPEAKER_00 是"张三"）
+requests.post(
+    f"{BASE}/api/voiceprints/enroll",
+    headers=H,
+    data={
+        "tr_id": result["id"],
+        "speaker_label": "SPEAKER_00",  # 原始标签！
+        "speaker_name": "张三",
+    },
+).raise_for_status()
+```
+
+## 什么时候该登记声纹
+
+**只在用户明确告诉你某个 `SPEAKER_XX` 是谁的时候**。不要自己猜。
+
+推荐的触发时机：
+- 用户说"SPEAKER_00 是张三"、"第一个说话的是老李"之类的
+- 用户纠正了一段错误归属（比如说"这段其实是 Alice 说的"）
+- 用户在 UI 里主动点了"登记"
+
+**不要**主动发起登记，也不要把 `speaker_name` 当作用户确认的姓名去登记——
+那可能只是上一次自动匹配的结果。
+
+## 常见错误和怎么处理
+
+| 现象 | 含义 | 怎么办 |
+| --- | --- | --- |
+| `401 Unauthorized` | key 没带或不对 | 检查 `Authorization` header |
+| `404 Embedding not found for this speaker label` | enroll 时 `speaker_label` 用错了（传了显示名） | 改用原始 `SPEAKER_XX` |
+| 轮询一直 `transcribing` | 音频较长或首次加载模型 | 继续轮询，别超过 20 分钟 |
+| `status = failed, error = "..."` | 容器内异常 | 直接把 `error` 字段报给用户，必要时看 `docker logs` |
+| `segments` 是空数组 | 音频静音 / 太短 / 采样率问题 | 告诉用户换一份音频，或确认文件没坏 |
+
+## 不要做的事
+
+- ❌ 不要把 `HF_TOKEN` 或 `API_KEY` 写进代码、日志、prompt 里
+- ❌ 不要把 `:8780` 暴露给不信任的客户端
+- ❌ 不要在 `data/voiceprints/` 里手改 `.npy` 文件，用 API 的 delete / rename
+- ❌ 不要把一次音频重复提交很多次——每次都会跑一遍 whisper，浪费 GPU
+- ❌ 不要把 `speaker_id` 和 `speaker_label` 搞混：
+  - `speaker_label` = `SPEAKER_00`，录音内的本地标签
+  - `speaker_id` = `spk_xxxx`，全局声纹库 id
+
+## 建议
+
+- 如果你同时负责多条音频：先都 submit 完拿到所有 job_id，再并行 poll，
+  不要一条完成再提交下一条。
+- 如果你需要把转录结果注入后续 prompt，建议走
+  `GET /api/export/{tr_id}?format=txt`，它已经把 segment 合并成按说话人分行
+  的纯文本。
+- 如果同一个说话人声纹已经登记过，新的一次录音里他依然会出现在 `speaker_label`
+  为 `SPEAKER_XX` 下，但 `speaker_name` 会是已登记的名字。这不是 bug。
+
+## 相关文档
+
+- 详细接口合同 → [`api.zh.md`](./api.zh.md)
+- 部署和排障 → [`quickstart.zh.md`](./quickstart.zh.md)
+- 安全注意事项 → [`security.zh.md`](./security.zh.md)
