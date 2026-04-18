@@ -34,33 +34,29 @@ class TranscriptionPipeline:
 
     @property
     def whisper(self):
-        """Lazy-load the WhisperX model (wraps faster-whisper via CT2)."""
+        """Lazy-load faster-whisper directly.
+
+        We deliberately do NOT use ``whisperx.load_model`` here: whisperx 3.1.x
+        (the only line compatible with our ``torch==2.4.1`` + ``pyannote==3.1.1``
+        pins) was built against an older ``faster_whisper.TranscriptionOptions``
+        schema and crashes with newer faster-whisper versions.  whisperx is
+        used only for forced alignment below (``whisperx.align``), which is
+        decoupled from the transcriber.
+        """
         if self._whisper is None:
-            import os
             from pathlib import Path
-            import whisperx
+            from faster_whisper import WhisperModel
 
             compute_type = "float16" if self.device == "cuda" else "int8"
-
-            # Resolve the model path:
-            #   1. If /models/faster-whisper-<size> exists (read-only mount
-            #      with a pre-downloaded CT2 checkpoint tree), use it directly
-            #      — zero network, zero HF hub round-trip.
-            #   2. Otherwise fall back to the plain HF hub id ("large-v3" etc.)
-            #      and let faster-whisper resolve via HF_HOME=/cache.
-            # We NEVER pass download_root="/models" — that path is bind-mounted
-            # read-only, and HF hub's snapshot layout (refs/main, blobs/…)
-            # would need to write there.
             local_dir = Path("/models") / f"faster-whisper-{self.model_size}"
             model_ref = str(local_dir) if local_dir.exists() else self.model_size
-
             logger.info(
-                "Loading WhisperX model %s on %s (compute_type=%s)",
+                "Loading faster-whisper %s on %s (compute_type=%s)",
                 model_ref,
                 self.device,
                 compute_type,
             )
-            self._whisper = whisperx.load_model(
+            self._whisper = WhisperModel(
                 model_ref,
                 device=self.device,
                 compute_type=compute_type,
@@ -98,35 +94,40 @@ class TranscriptionPipeline:
         return self._embedding_model
 
     def transcribe(self, audio_path: str, language: str = "zh") -> dict:
-        """Run WhisperX transcription and return the raw result dict.
+        """Run faster-whisper and return a whisperx-compatible result dict.
 
-        Parameters
-        ----------
-        audio_path:
-            Path to an audio file that WhisperX can load (wav, mp3, m4a, …).
-        language:
-            BCP-47 language code. Pass an empty string ("") to let WhisperX
-            auto-detect the language from the first 30 seconds of audio
-            (mirrors the old faster-whisper auto-detect behaviour). The
-            container default is "zh" (Mandarin).
-
-        Returns
-        -------
-        dict with at minimum:
-            "segments" — list of segment dicts (start, end, text)
-            "language" — detected or supplied language code
+        whisperx.align expects ``{"segments": [...], "language": "..."}`` with
+        each segment carrying ``start``/``end``/``text``. We produce exactly
+        that shape here so the alignment step downstream is a drop-in.
         """
-        import whisperx
-
-        audio = whisperx.load_audio(audio_path)
-
-        # WhisperX expects language=None for auto-detect; we map "" -> None.
         lang_arg = language if language else None
-        logger.info("Starting WhisperX transcription (language=%s)", lang_arg or "auto")
+        logger.info(
+            "Starting faster-whisper transcription (language=%s)",
+            lang_arg or "auto",
+        )
 
-        result = self.whisper.transcribe(audio, language=lang_arg, batch_size=16)
-        logger.info("WhisperX transcription done: language=%s", result.get("language"))
-        return result
+        segments_iter, info = self.whisper.transcribe(
+            audio_path,
+            language=lang_arg,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
+        )
+        segments = [
+            {
+                "start": round(float(s.start), 3),
+                "end": round(float(s.end), 3),
+                "text": s.text.strip(),
+            }
+            for s in segments_iter
+        ]
+        detected = info.language
+        logger.info(
+            "Transcription done: %d segments, language=%s",
+            len(segments),
+            detected,
+        )
+        return {"segments": segments, "language": detected}
 
     def diarize(
         self, audio_path: str, min_speakers: int = None, max_speakers: int = None
