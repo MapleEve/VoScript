@@ -1,0 +1,67 @@
+name: '🐛 反馈缺陷'
+description: '反馈一个问题缺陷'
+title: '[缺陷] '
+labels: [ '🔍 Unconfirmed' ]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        在创建新的 Issue 之前，请先[搜索已有问题](https://github.com/MapleEve/openplaud-voice-transcribe/issues)，如果发现已有类似的问题，请给它 **👍 点赞**，这样可以帮助我们更快地解决问题。
+  - type: dropdown
+    attributes:
+      label: '📦 部署方式'
+      multiple: true
+      options:
+        - 'docker compose（本仓库自带）'
+        - '裸机 / venv'
+        - 'Kubernetes / 其他容器运行时'
+        - '其他'
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: '📌 服务版本 / commit'
+      description: '`git rev-parse --short HEAD` 的输出，或者 release 的 tag。'
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: '🎮 GPU / CUDA'
+      description: '比如 RTX 3090 / CUDA 12.4，不确定可以跑 `nvidia-smi` 贴关键行。'
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: '🔗 调用方'
+      description: '出问题时是通过什么调用这个服务？'
+      multiple: true
+      options:
+        - 'OpenPlaud'
+        - '内置 Web UI（/ 路径）'
+        - 'curl / 自写脚本'
+        - '其他'
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: '🐛 问题描述'
+      description: 清晰简洁地描述问题。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: '📷 复现步骤'
+      description: 复现这个问题的最小步骤，包括确切的 `curl` 或 OpenPlaud 操作。
+  - type: textarea
+    attributes:
+      label: '🚦 期望结果'
+  - type: textarea
+    attributes:
+      label: '📝 补充信息'
+  - type: textarea
+    attributes:
+      label: '容器日志'
+      description: |
+        `docker logs voice-transcribe` 的相关输出。
+        粘贴之前请务必去掉 HF_TOKEN、API_KEY 等敏感值。
+      render: shell

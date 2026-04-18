@@ -1,0 +1,25 @@
+services:
+  voice-transcribe:
+    build: ./app
+    container_name: voice-transcribe
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8780}:8780"
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - ${MODEL_CACHE_DIR:-./models}:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - API_KEY=${API_KEY:-}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+      - DEVICE=${DEVICE:-cuda}
+      - HF_HOME=/root/.cache/huggingface
+      - HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

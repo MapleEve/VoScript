@@ -1,0 +1,19 @@
+# Pin torch to base image versions - DO NOT let pyannote upgrade
+torch==2.4.1
+torchaudio==2.4.1
+torchvision==0.19.1
+# pyannote 3.1.1 works with torch 2.4.x (no torch>=2.8 requirement)
+pyannote.audio==3.1.1
+faster-whisper>=1.1.0
+speechbrain>=1.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+aiofiles>=24.0
+# numpy<2 required: pyannote 3.1.1 uses np.NaN (removed in numpy 2.x)
+numpy>=1.24.0,<2.0
+# huggingface_hub<0.24 keeps the use_auth_token kwarg pyannote 3.1.1 relies on
+huggingface_hub>=0.20.0,<0.24
+matplotlib>=3.7
+pydub>=0.25.1
+scipy>=1.11.0

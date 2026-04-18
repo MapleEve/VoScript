@@ -1,0 +1,33 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime state — never commit user audio, transcripts, or voiceprints
+data/
+models/
+app/data/
+app/models/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Node scratch (from OpenPlaud probes copied here)
+node_modules/
+tmp/

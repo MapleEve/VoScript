@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Transcribe - 会议转录</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+.speaker-color-0 { border-left-color: #3b82f6; }
+.speaker-color-1 { border-left-color: #ef4444; }
+.speaker-color-2 { border-left-color: #10b981; }
+.speaker-color-3 { border-left-color: #f59e0b; }
+.speaker-color-4 { border-left-color: #8b5cf6; }
+.speaker-color-5 { border-left-color: #ec4899; }
+.speaker-color-6 { border-left-color: #06b6d4; }
+.speaker-color-7 { border-left-color: #84cc16; }
+.speaker-badge-0 { background-color: #3b82f6; }
+.speaker-badge-1 { background-color: #ef4444; }
+.speaker-badge-2 { background-color: #10b981; }
+.speaker-badge-3 { background-color: #f59e0b; }
+.speaker-badge-4 { background-color: #8b5cf6; }
+.speaker-badge-5 { background-color: #ec4899; }
+.speaker-badge-6 { background-color: #06b6d4; }
+.speaker-badge-7 { background-color: #84cc16; }
+#drop-zone.dragover { border-color: #3b82f6; background-color: #eff6ff; }
+</style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+<header class="border-b border-gray-800 px-6 py-3 flex items-center justify-between">
+  <h1 class="text-lg font-semibold">Voice Transcribe</h1>
+  <div class="flex gap-4 text-sm">
+    <button onclick="showTab('transcribe')" id="tab-transcribe" class="tab-btn text-blue-400">转录</button>
+    <button onclick="showTab('history')" id="tab-history" class="tab-btn text-gray-400">历史</button>
+    <button onclick="showTab('voiceprints')" id="tab-voiceprints" class="tab-btn text-gray-400">声纹库</button>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto p-6">
+
+  <!-- Upload Tab -->
+  <div id="panel-transcribe">
+    <div id="drop-zone" class="border-2 border-dashed border-gray-700 rounded-xl p-12 text-center cursor-pointer transition-colors"
+         ondragover="event.preventDefault(); this.classList.add('dragover')"
+         ondragleave="this.classList.remove('dragover')"
+         ondrop="handleDrop(event)"
+         onclick="document.getElementById('file-input').click()">
+      <input type="file" id="file-input" accept="audio/*" class="hidden" onchange="handleFile(this.files[0])">
+      <p class="text-gray-400 text-lg mb-2">拖拽音频文件到此处，或点击选择</p>
+      <p class="text-gray-600 text-sm">支持 M4A, WAV, MP3, FLAC, OGG 等格式</p>
+    </div>
+
+    <div id="upload-options" class="mt-4 flex gap-4 items-end hidden">
+      <div>
+        <label class="block text-sm text-gray-400 mb-1">语言</label>
+        <select id="opt-lang" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm">
+          <option value="zh" selected>中文</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm text-gray-400 mb-1">最少发言人</label>
+        <input type="number" id="opt-min-spk" value="0" min="0" max="20" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm w-20">
+      </div>
+      <div>
+        <label class="block text-sm text-gray-400 mb-1">最多发言人</label>
+        <input type="number" id="opt-max-spk" value="0" min="0" max="20" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm w-20">
+      </div>
+      <div id="selected-file" class="text-sm text-gray-400 flex-1"></div>
+      <button onclick="startTranscribe()" class="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded text-sm font-medium">开始转录</button>
+    </div>
+
+    <!-- Progress -->
+    <div id="progress-panel" class="mt-6 hidden">
+      <div class="flex items-center gap-3">
+        <div class="animate-spin h-5 w-5 border-2 border-blue-400 border-t-transparent rounded-full"></div>
+        <span id="progress-text" class="text-sm text-gray-400">处理中...</span>
+      </div>
+    </div>
+
+    <!-- Result -->
+    <div id="result-panel" class="mt-6 hidden">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-medium" id="result-title"></h2>
+        <div class="flex gap-2">
+          <button onclick="exportResult('srt')" class="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm">导出 SRT</button>
+          <button onclick="exportResult('txt')" class="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm">导出 TXT</button>
+          <button onclick="exportResult('json')" class="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm">导出 JSON</button>
+        </div>
+      </div>
+
+      <!-- Speaker legend -->
+      <div id="speaker-legend" class="flex flex-wrap gap-2 mb-4"></div>
+
+      <!-- Segments -->
+      <div id="segments-list" class="space-y-1 max-h-[60vh] overflow-y-auto"></div>
+
+      <!-- Enroll -->
+      <div id="enroll-panel" class="mt-6 border-t border-gray-800 pt-4">
+        <h3 class="text-sm font-medium text-gray-400 mb-3">注册/更新声纹</h3>
+        <div id="enroll-buttons" class="flex flex-wrap gap-2"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- History Tab -->
+  <div id="panel-history" class="hidden">
+    <div id="history-list" class="space-y-2"></div>
+    <p id="history-empty" class="text-gray-500 text-center py-12">暂无历史记录</p>
+  </div>
+
+  <!-- Voiceprints Tab -->
+  <div id="panel-voiceprints" class="hidden">
+    <div id="vp-list" class="space-y-2"></div>
+    <p id="vp-empty" class="text-gray-500 text-center py-12">声纹库为空</p>
+  </div>
+
+</main>
+
+<script>
+let currentFile = null;
+let currentJobId = null;
+let currentTrId = null;
+let pollTimer = null;
+
+function showTab(name) {
+  ['transcribe', 'history', 'voiceprints'].forEach(t => {
+    document.getElementById('panel-' + t).classList.toggle('hidden', t !== name);
+    document.getElementById('tab-' + t).classList.toggle('text-blue-400', t === name);
+    document.getElementById('tab-' + t).classList.toggle('text-gray-400', t !== name);
+  });
+  if (name === 'history') loadHistory();
+  if (name === 'voiceprints') loadVoiceprints();
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  e.target.classList.remove('dragover');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+}
+
+function handleFile(file) {
+  if (!file) return;
+  currentFile = file;
+  document.getElementById('upload-options').classList.remove('hidden');
+  document.getElementById('selected-file').textContent = `${file.name} (${(file.size/1024/1024).toFixed(1)} MB)`;
+}
+
+async function startTranscribe() {
+  if (!currentFile) return;
+  const form = new FormData();
+  form.append('file', currentFile);
+  form.append('language', document.getElementById('opt-lang').value);
+  form.append('min_speakers', document.getElementById('opt-min-spk').value);
+  form.append('max_speakers', document.getElementById('opt-max-spk').value);
+
+  document.getElementById('progress-panel').classList.remove('hidden');
+  document.getElementById('result-panel').classList.add('hidden');
+  document.getElementById('progress-text').textContent = '上传中...';
+
+  const resp = await fetch('/api/transcribe', { method: 'POST', body: form });
+  const data = await resp.json();
+  currentJobId = data.id;
+  pollStatus();
+}
+
+function pollStatus() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const resp = await fetch(`/api/jobs/${currentJobId}`);
+    const data = await resp.json();
+    const statusMap = {
+      queued: '排队中...', converting: '转换音频格式...',
+      transcribing: '转录中（语音识别 + 说话人分离）...', identifying: '识别声纹...',
+      completed: '完成', failed: '失败',
+    };
+    document.getElementById('progress-text').textContent = statusMap[data.status] || data.status;
+
+    if (data.status === 'completed') {
+      clearInterval(pollTimer);
+      document.getElementById('progress-panel').classList.add('hidden');
+      showResult(data.result);
+    } else if (data.status === 'failed') {
+      clearInterval(pollTimer);
+      document.getElementById('progress-text').textContent = `失败: ${data.error}`;
+    }
+  }, 2000);
+}
+
+function showResult(result) {
+  currentTrId = result.id;
+  document.getElementById('result-panel').classList.remove('hidden');
+  document.getElementById('result-title').textContent = result.filename;
+
+  const speakers = [...new Set(result.segments.map(s => s.speaker_name))];
+  const colorMap = {};
+  speakers.forEach((s, i) => colorMap[s] = i % 8);
+
+  // Legend
+  const legend = document.getElementById('speaker-legend');
+  legend.innerHTML = speakers.map(s =>
+    `<span class="speaker-badge-${colorMap[s]} text-white text-xs px-2 py-1 rounded-full">${s}</span>`
+  ).join('');
+
+  // Segments
+  const list = document.getElementById('segments-list');
+  list.innerHTML = result.segments.map(seg => {
+    const ci = colorMap[seg.speaker_name] || 0;
+    const ts = formatTime(seg.start);
+    const sim = seg.similarity > 0 ? ` (${(seg.similarity * 100).toFixed(0)}%)` : '';
+    return `<div class="border-l-4 speaker-color-${ci} pl-3 py-1">
+      <span class="text-xs text-gray-500">${ts}</span>
+      <span class="text-xs font-medium ml-2 speaker-badge-${ci} text-white px-1.5 py-0.5 rounded">${seg.speaker_name}${sim}</span>
+      <p class="text-sm mt-0.5">${seg.text}</p>
+    </div>`;
+  }).join('');
+
+  // Enroll buttons
+  const enrollDiv = document.getElementById('enroll-buttons');
+  const speakerMap = result.speaker_map || {};
+  enrollDiv.innerHTML = Object.entries(speakerMap).map(([label, info]) => {
+    const matched = info.matched_id ? `已匹配: ${info.matched_name}` : '未识别';
+    return `<div class="bg-gray-800 rounded p-3 text-sm">
+      <div class="font-medium">${label} → ${matched}</div>
+      <div class="mt-2 flex gap-2">
+        <input type="text" placeholder="输入姓名" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs w-24" id="enroll-name-${label}">
+        <button onclick="enrollSpeaker('${label}', '${info.matched_id || ''}')"
+                class="bg-green-700 hover:bg-green-600 px-2 py-1 rounded text-xs">
+          ${info.matched_id ? '更新声纹' : '注册声纹'}
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function enrollSpeaker(label, existingId) {
+  const nameInput = document.getElementById(`enroll-name-${label}`);
+  const name = nameInput.value.trim();
+  if (!name) { alert('请输入姓名'); return; }
+
+  const form = new FormData();
+  form.append('tr_id', currentTrId);
+  form.append('speaker_label', label);
+  form.append('speaker_name', name);
+  if (existingId) form.append('speaker_id', existingId);
+
+  const resp = await fetch('/api/voiceprints/enroll', { method: 'POST', body: form });
+  const data = await resp.json();
+  alert(data.action === 'created' ? `已注册: ${name}` : `已更新: ${name}`);
+}
+
+async function loadHistory() {
+  const resp = await fetch('/api/transcriptions');
+  const list = await resp.json();
+  const el = document.getElementById('history-list');
+  const empty = document.getElementById('history-empty');
+
+  if (!list.length) { el.innerHTML = ''; empty.classList.remove('hidden'); return; }
+  empty.classList.add('hidden');
+  el.innerHTML = list.map(tr => `
+    <div class="bg-gray-900 rounded-lg p-4 cursor-pointer hover:bg-gray-800 transition-colors" onclick="loadTranscription('${tr.id}')">
+      <div class="flex justify-between">
+        <span class="font-medium">${tr.filename}</span>
+        <span class="text-xs text-gray-500">${tr.created_at.replace('T', ' ').slice(0, 19)}</span>
+      </div>
+      <div class="text-xs text-gray-500 mt-1">${tr.segment_count} 段 · ${tr.speaker_count} 位发言人</div>
+    </div>
+  `).join('');
+}
+
+async function loadTranscription(trId) {
+  const resp = await fetch(`/api/transcriptions/${trId}`);
+  const data = await resp.json();
+  showTab('transcribe');
+  showResult(data);
+}
+
+async function loadVoiceprints() {
+  const resp = await fetch('/api/voiceprints');
+  const list = await resp.json();
+  const el = document.getElementById('vp-list');
+  const empty = document.getElementById('vp-empty');
+
+  if (!list.length) { el.innerHTML = ''; empty.classList.remove('hidden'); return; }
+  empty.classList.add('hidden');
+  el.innerHTML = list.map(vp => `
+    <div class="bg-gray-900 rounded-lg p-4 flex justify-between items-center">
+      <div>
+        <span class="font-medium">${vp.name}</span>
+        <span class="text-xs text-gray-500 ml-2">${vp.sample_count} 个样本</span>
+        <span class="text-xs text-gray-600 ml-2">更新于 ${(vp.updated_at || '').replace('T', ' ').slice(0, 19)}</span>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="renameVp('${vp.id}')" class="text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded">重命名</button>
+        <button onclick="deleteVp('${vp.id}')" class="text-xs bg-red-900 hover:bg-red-800 px-2 py-1 rounded">删除</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function renameVp(id) {
+  const name = prompt('输入新名称:');
+  if (!name) return;
+  const form = new FormData();
+  form.append('name', name);
+  await fetch(`/api/voiceprints/${id}/name`, { method: 'PUT', body: form });
+  loadVoiceprints();
+}
+
+async function deleteVp(id) {
+  if (!confirm('确定删除此声纹？')) return;
+  await fetch(`/api/voiceprints/${id}`, { method: 'DELETE' });
+  loadVoiceprints();
+}
+
+function exportResult(fmt) {
+  if (!currentTrId) return;
+  window.open(`/api/export/${currentTrId}?format=${fmt}`);
+}
+
+function formatTime(sec) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+</script>
+</body>
+</html>
