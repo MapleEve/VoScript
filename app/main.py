@@ -1,13 +1,13 @@
 """FastAPI service for voice transcription with speaker identification."""
 
+import hmac
 import json
 import os
-import shutil
 import subprocess
 import uuid
 import logging
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from threading import Thread
 
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Request
@@ -33,13 +33,27 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 VOICEPRINTS_DIR = DATA_DIR / "voiceprints"
 
 API_KEY = (os.getenv("API_KEY") or "").strip() or None
-# Paths that must stay open even when API_KEY auth is enabled. The bundled
-# web UI at "/" has to be reachable from a browser (browsers can't attach a
-# Bearer header to a direct navigation); the UI's own fetch() calls to /api/*
-# still carry the key. /static/* serves the UI's assets; /healthz is a
-# liveness probe; /docs /redoc /openapi.json are FastAPI's auto docs.
-PUBLIC_EXACT_PATHS = {"/", "/healthz"}
-PUBLIC_PATH_PREFIXES = ("/static/", "/docs", "/openapi.json", "/redoc")
+# Paths that must stay open even when API_KEY auth is enabled. "/" is the
+# bundled web UI (browsers can't attach a Bearer header to a direct
+# navigation — the UI's own fetch() calls to /api/* still carry the key).
+# /static/* serves the UI's assets. /healthz is a liveness probe. /docs
+# /redoc /openapi.json are FastAPI's auto docs.
+# We match exact strings for everything except /static/ to avoid a
+# startswith("/docs") bypass like /docsXYZ.
+PUBLIC_EXACT_PATHS = {
+    "/",
+    "/healthz",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+}
+PUBLIC_PATH_PREFIXES = ("/static/",)
+
+# Cap how much any single upload can occupy on disk. Whisper + pyannote
+# comfortably handle 2 GB of audio (~20 h @ typical bitrates); anything
+# beyond that is either a mistake or an attempt to exhaust storage.
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
+UPLOAD_CHUNK = 1 << 20  # 1 MiB
 
 for d in [TRANSCRIPTIONS_DIR, UPLOADS_DIR, VOICEPRINTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -73,7 +87,10 @@ async def require_api_key(request: Request, call_next):
         bearer = auth_header.split(" ", 1)[1].strip()
     header_key = request.headers.get("x-api-key", "").strip()
 
-    if bearer != API_KEY and header_key != API_KEY:
+    # Constant-time comparison — no timing signal leaks the key prefix.
+    if not (
+        hmac.compare_digest(bearer, API_KEY) or hmac.compare_digest(header_key, API_KEY)
+    ):
         return JSONResponse(
             {"detail": "Unauthorized"},
             status_code=401,
@@ -107,6 +124,10 @@ def _convert_to_wav(input_path: Path) -> Path:
     wav_path = input_path.with_suffix(".wav")
     if input_path.suffix.lower() == ".wav":
         return input_path
+    # "--" closes ffmpeg's option parsing so a filename like `-foo.mp4`
+    # can't be interpreted as a flag. Defense in depth — the upload path
+    # already strips client-side directory components and prefixes the
+    # job_id, so input_path always starts with /data/uploads/tr_...
     subprocess.run(
         [
             "ffmpeg",
@@ -121,6 +142,7 @@ def _convert_to_wav(input_path: Path) -> Path:
             "1",
             "-f",
             "wav",
+            "--",
             str(wav_path),
         ],
         check=True,
@@ -229,13 +251,35 @@ async def transcribe(
     max_speakers: int = Form(0),
 ):
     job_id = f"tr_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
-    save_path = UPLOADS_DIR / f"{job_id}_{file.filename}"
+
+    # Strip any directory component a client may have smuggled in via the
+    # multipart filename (e.g. `../../etc/passwd`, `/tmp/evil`). We never
+    # trust the client-provided filename as a path segment.
+    safe_filename = PurePosixPath(file.filename or "upload").name or "upload"
+    save_path = UPLOADS_DIR / f"{job_id}_{safe_filename}"
+
+    # Streaming size-capped copy — refuse unbounded uploads that could
+    # exhaust disk. Delete the partial artifact on overflow so we don't
+    # leave a huge file behind.
+    size = 0
     with open(save_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        while True:
+            chunk = file.file.read(UPLOAD_CHUNK)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_UPLOAD_BYTES:
+                f.close()
+                save_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    413,
+                    f"Upload exceeds MAX_UPLOAD_BYTES ({MAX_UPLOAD_BYTES} bytes)",
+                )
+            f.write(chunk)
 
     jobs[job_id] = {
         "status": "queued",
-        "filename": file.filename,
+        "filename": safe_filename,
         "created_at": datetime.now().isoformat(),
     }
     thread = Thread(

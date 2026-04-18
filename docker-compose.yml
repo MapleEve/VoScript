@@ -1,20 +1,27 @@
 services:
   voice-transcribe:
-    build: ./app
+    build:
+      context: ./app
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     container_name: voice-transcribe
     restart: unless-stopped
+    # Runs as the non-root `app` user baked into the image. Override only if
+    # your DATA_DIR on the host is owned by a different uid/gid.
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
     ports:
       - "${HOST_PORT:-8780}:8780"
     volumes:
       - ${DATA_DIR:-./data}:/data
-      - ${MODEL_CACHE_DIR:-./models}:/root/.cache/huggingface
+      - ${MODEL_CACHE_DIR:-./models}:/cache
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - API_KEY=${API_KEY:-}
+      - MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES:-2147483648}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
       - DEVICE=${DEVICE:-cuda}
-      - HF_HOME=/root/.cache/huggingface
       - HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}
     deploy:
       resources:

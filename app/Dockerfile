@@ -9,6 +9,13 @@ ENV PYTHONUNBUFFERED=1
 ARG APT_MIRROR=""
 ARG PIP_INDEX_URL=""
 
+# UID/GID the container runs as. Defaults to 1000 so bind mounts from a
+# typical Linux host (where the first non-root user is uid 1000) work
+# out of the box. Hosts with a different owner should pass a build arg
+# matching `id -u` of the user who owns DATA_DIR.
+ARG APP_UID=1000
+ARG APP_GID=1000
+
 RUN if [ -n "$APT_MIRROR" ]; then \
         sed -i "s|http://archive.ubuntu.com|${APT_MIRROR}|g; s|http://security.ubuntu.com|${APT_MIRROR}|g" /etc/apt/sources.list || true; \
     fi
@@ -18,19 +25,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Non-root runtime user. An RCE inside the container only owns the service's
+# own uid — it cannot read root-owned files mounted elsewhere on the host.
+RUN groupadd -g ${APP_GID} app \
+    && useradd -u ${APP_UID} -g ${APP_GID} -m -s /sbin/nologin app \
+    && mkdir -p /cache /data \
+    && chown -R app:app /cache /data
+
 WORKDIR /app
 
-COPY requirements.txt .
+COPY --chown=app:app requirements.txt .
 RUN if [ -n "$PIP_INDEX_URL" ]; then \
         pip install --no-cache-dir -i "$PIP_INDEX_URL" -r requirements.txt; \
     else \
         pip install --no-cache-dir -r requirements.txt; \
     fi
 
-COPY . .
+COPY --chown=app:app . .
+RUN chown -R app:app /app
+
+# HuggingFace cache lives under the app user's reach, not /root.
+ENV HF_HOME=/cache \
+    HUGGINGFACE_HUB_CACHE=/cache \
+    TORCH_HOME=/cache/torch \
+    XDG_CACHE_HOME=/cache
+
+USER app
 
 EXPOSE 8780
 
-VOLUME ["/data"]
+VOLUME ["/data", "/cache"]
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8780"]
