@@ -21,7 +21,7 @@ if ! grep -qE '^API_KEY=.+' .env || grep -q '^API_KEY=change-me' .env; then
     echo "         accept unauthenticated requests — only safe on trusted LAN." >&2
 fi
 
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 
 echo
 echo "Waiting for /healthz..."

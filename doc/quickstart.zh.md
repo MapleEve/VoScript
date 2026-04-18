@@ -161,7 +161,7 @@ HF_ENDPOINT=https://hf-mirror.com
 ## 3. 启动服务
 
 ```bash
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 ```
 
 第一次跑要下约 **5 GB** 的模型权重到 `./models/`，可以用下面这句跟进度：
@@ -210,7 +210,7 @@ curl -sS http://localhost:8780/api/voiceprints \
 ```bash
 cd openplaud-voice-transcribe
 git pull
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 ```
 
 模型权重被缓存到 `./models/`，重建镜像不会重新下载。

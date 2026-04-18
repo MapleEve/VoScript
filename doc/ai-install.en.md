@@ -150,12 +150,28 @@ API_KEY_VALUE=$(openssl rand -hex 32)
 # confirm with the user, or let them provide their own
 ```
 
-Then set the two critical fields in place (keep other defaults):
+Then rewrite `.env` via Python — **not** `sed + string interpolation`.
+Characters like `&`, `/`, or newlines in a token break sed, and if either
+variable is unset, sed will silently blank the field:
 
 ```bash
-sed -i.bak "s|^HF_TOKEN=.*|HF_TOKEN=${USER_SUPPLIED_HF_TOKEN}|" .env
-sed -i.bak "s|^API_KEY=.*|API_KEY=${API_KEY_VALUE}|" .env
-rm .env.bak
+# bail out early if either variable is missing
+: "${USER_SUPPLIED_HF_TOKEN:?need HF_TOKEN from user}"
+: "${API_KEY_VALUE:?API_KEY_VALUE is empty}"
+
+# pass values via env; Python doesn't do shell escaping
+HF_TOKEN="$USER_SUPPLIED_HF_TOKEN" API_KEY="$API_KEY_VALUE" python3 - <<'PY'
+import os, pathlib
+env = pathlib.Path(".env")
+lines = []
+for line in env.read_text().splitlines():
+    if line.startswith("HF_TOKEN="):
+        line = f"HF_TOKEN={os.environ['HF_TOKEN']}"
+    elif line.startswith("API_KEY="):
+        line = f"API_KEY={os.environ['API_KEY']}"
+    lines.append(line)
+env.write_text("\n".join(lines) + "\n")
+PY
 ```
 
 **Right after the edit**, show the user the `API_KEY` value **one time**
@@ -179,7 +195,7 @@ grep -q '^HF_ENDPOINT=' .env || echo 'HF_ENDPOINT=https://hf-mirror.com' >> .env
 ### 3. Launch
 
 ```bash
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 ```
 
 ### 4. Wait for model downloads
@@ -205,8 +221,8 @@ Key signals:
 curl -sf http://localhost:8780/healthz
 # expect: {"ok":true}
 
-# auth actually enforced?
-source .env
+# auth actually enforced? (avoid `source .env` — values could be shell-evaluated)
+API_KEY=$(grep -E '^API_KEY=' .env | tail -n1 | cut -d= -f2-)
 curl -sS http://localhost:8780/api/voiceprints -H "Authorization: Bearer $API_KEY"
 # expect: [] (empty on first boot)
 
@@ -274,10 +290,17 @@ exec uvicorn main:app --host 0.0.0.0 --port 8780
 EOF
 chmod +x run.sh
 
-# Now actually fill in the token and key
-sed -i.bak "s|__FILL_ME__|${HF_TOKEN}|" run.sh     # first occurrence = HF_TOKEN
-sed -i.bak "s|__FILL_ME__|${API_KEY_VALUE}|" run.sh   # second = API_KEY
-rm run.sh.bak
+# Fill in token and key safely (Python, single-shot replace — no sed escapes)
+: "${HF_TOKEN:?missing}"
+: "${API_KEY_VALUE:?missing}"
+HF_TOKEN="$HF_TOKEN" API_KEY="$API_KEY_VALUE" python3 - <<'PY'
+import os, pathlib
+p = pathlib.Path("run.sh")
+text = p.read_text()
+text = text.replace("__FILL_ME__", os.environ["HF_TOKEN"], 1)
+text = text.replace("__FILL_ME__", os.environ["API_KEY"], 1)
+p.write_text(text)
+PY
 
 # gitignore it so it can never leak
 grep -q '^run.sh$' .gitignore || echo 'run.sh' >> .gitignore
@@ -339,7 +362,7 @@ cd ~/openplaud-voice-transcribe   # or actual path
 git fetch origin
 git diff --stat main origin/main   # show the user what will change
 git pull
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 docker logs --tail 40 voice-transcribe
 curl -sf http://localhost:8780/healthz
 ```

@@ -135,13 +135,28 @@ API_KEY_VALUE=$(openssl rand -hex 32)
 # 向用户确认是否用这个值，或让用户自带
 ```
 
-然后用下面这段（或等价工具）把 `.env` 里两个关键字段填上：
+然后用 Python 安全地改 `.env`——**不要**用 `sed + 字符串插值**，token 或 key 里
+出现 `&`、`/`、换行之类的字符时 sed 会炸，而且一旦变量没设，还会静默把
+`.env` 写成空值：
 
 ```bash
-# 用 sed 只改这两行，保持其他默认值
-sed -i.bak "s|^HF_TOKEN=.*|HF_TOKEN=${USER_SUPPLIED_HF_TOKEN}|" .env
-sed -i.bak "s|^API_KEY=.*|API_KEY=${API_KEY_VALUE}|" .env
-rm .env.bak
+# 先 bail-out，保证两个变量都有值
+: "${USER_SUPPLIED_HF_TOKEN:?need HF_TOKEN from user}"
+: "${API_KEY_VALUE:?API_KEY_VALUE is empty}"
+
+# 通过环境变量传值给 Python，Python 不做任何 shell 转义
+HF_TOKEN="$USER_SUPPLIED_HF_TOKEN" API_KEY="$API_KEY_VALUE" python3 - <<'PY'
+import os, pathlib
+env = pathlib.Path(".env")
+lines = []
+for line in env.read_text().splitlines():
+    if line.startswith("HF_TOKEN="):
+        line = f"HF_TOKEN={os.environ['HF_TOKEN']}"
+    elif line.startswith("API_KEY="):
+        line = f"API_KEY={os.environ['API_KEY']}"
+    lines.append(line)
+env.write_text("\n".join(lines) + "\n")
+PY
 ```
 
 **在改完之后**立刻向用户展示 `.env` 里的 `API_KEY`（只在这一次露出明文），
@@ -163,7 +178,7 @@ grep -q '^HF_ENDPOINT=' .env || echo 'HF_ENDPOINT=https://hf-mirror.com' >> .env
 ### 3. 启动
 
 ```bash
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 ```
 
 ### 4. 等模型下载完毕
@@ -187,8 +202,8 @@ docker logs --tail 20 voice-transcribe
 curl -sf http://localhost:8780/healthz
 # 期望：{"ok":true}
 
-# 鉴权有没有生效
-source .env
+# 鉴权有没有生效（不要用 `source .env`，值里若有 shell 元字符会被执行）
+API_KEY=$(grep -E '^API_KEY=' .env | tail -n1 | cut -d= -f2-)
 curl -sS http://localhost:8780/api/voiceprints -H "Authorization: Bearer $API_KEY"
 # 期望：[]（首次一定是空）
 
@@ -253,10 +268,17 @@ exec uvicorn main:app --host 0.0.0.0 --port 8780
 EOF
 chmod +x run.sh
 
-# 把 token / key 真正写进去
-sed -i.bak "s|__FILL_ME__|${HF_TOKEN}|" run.sh    # 第一处 = HF_TOKEN
-sed -i.bak "s|__FILL_ME__|${API_KEY_VALUE}|" run.sh  # 第二处 = API_KEY
-rm run.sh.bak
+# 把 token / key 写进去（Python + 单次替换，避免 sed 转义问题）
+: "${HF_TOKEN:?missing}"
+: "${API_KEY_VALUE:?missing}"
+HF_TOKEN="$HF_TOKEN" API_KEY="$API_KEY_VALUE" python3 - <<'PY'
+import os, pathlib
+p = pathlib.Path("run.sh")
+text = p.read_text()
+text = text.replace("__FILL_ME__", os.environ["HF_TOKEN"], 1)
+text = text.replace("__FILL_ME__", os.environ["API_KEY"], 1)
+p.write_text(text)
+PY
 
 # 加到 .gitignore，防止泄漏
 grep -q '^run.sh$' .gitignore || echo 'run.sh' >> .gitignore
@@ -314,7 +336,7 @@ cd ~/openplaud-voice-transcribe  # 或实际路径
 git fetch origin
 git diff --stat main origin/main   # 让用户看一下会变什么
 git pull
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 docker logs --tail 40 voice-transcribe
 curl -sf http://localhost:8780/healthz
 ```

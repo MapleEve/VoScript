@@ -186,7 +186,7 @@ for the full list.
 ## 3. Start the service
 
 ```bash
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 ```
 
 The first boot downloads ~5 GB of model weights into `./models/`. Watch
@@ -237,7 +237,7 @@ this service. See [`api.en.md`](./api.en.md) for the full contract.
 ```bash
 cd openplaud-voice-transcribe
 git pull
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 ```
 
 Model weights in `./models/` are cached, rebuild won't redownload them.

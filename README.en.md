@@ -66,7 +66,7 @@ cd openplaud-voice-transcribe
 cp .env.example .env
 # edit .env — at minimum set HF_TOKEN and API_KEY
 
-docker compose --env-file .env up -d --build
+docker compose up -d --build
 curl -sf http://localhost:8780/healthz
 ```
 
