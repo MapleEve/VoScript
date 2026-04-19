@@ -26,3 +26,6 @@ sqlite-vec>=0.1.0
 # explicitly. 3.2.0+ requires pyannote==3.3.2 or torch>=2.5; 3.3.0+ adds
 # torch>=2.8 — both incompatible with our stack.
 whisperx==3.1.6
+# Voice enhancement / noise reduction (optional — loaded only when DENOISE_MODEL != "none")
+deepfilternet>=0.5.6
+noisereduce>=3.0.0

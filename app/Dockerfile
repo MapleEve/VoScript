@@ -23,6 +23,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsndfile1 \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root runtime user. An RCE inside the container only owns the service's

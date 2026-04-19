@@ -21,12 +21,32 @@ services:
       # without round-tripping through HuggingFace on every cold start.
       - ${MODEL_CACHE_DIR:-./models}:/models:ro
     environment:
+      # HuggingFace token — required for gated models (pyannote diarization,
+      # segmentation-3.0, wespeaker-voxceleb-resnet34-LM).  Accept each model's
+      # gating agreement at https://huggingface.co before the first run.
       - HF_TOKEN=${HF_TOKEN}
+      # Bearer token for /api/* endpoints.  Leave empty to disable auth (LAN only).
       - API_KEY=${API_KEY:-}
+      # Maximum upload size in bytes.  Default: 2 GiB (~20 h of audio).
       - MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES:-2147483648}
+      # GPU index exposed to the container.  Set to "" to force CPU-only mode.
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      # Whisper model size.  Pre-download to MODEL_CACHE_DIR/faster-whisper-<size>
+      # to avoid downloading from HuggingFace on every cold start.
       - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+      # Compute device: "cuda" (default) or "cpu".
       - DEVICE=${DEVICE:-cuda}
+      # Noise reduction backend: none | deepfilternet | noisereduce.
+      # Recommended: none for PLAUD Pin / high-quality mics; deepfilternet only
+      # for noisy environments (SNR < 5 dB).  See docs/configuration.md.
+      - DENOISE_MODEL=${DENOISE_MODEL:-none}
+      # SNR gate (dB): audio at or above this threshold skips denoising.
+      # 10 dB ensures all PLAUD Pin recordings (min SNR 12.4 dB) are skipped.
+      - DENOISE_SNR_THRESHOLD=${DENOISE_SNR_THRESHOLD:-10.0}
+      # Base cosine-similarity threshold for voiceprint identification (0.0–1.0).
+      # Adaptive relaxation applies per-speaker on top of this base value.
+      - VOICEPRINT_THRESHOLD=${VOICEPRINT_THRESHOLD:-0.75}
+      # HuggingFace API endpoint.  Override to use a mirror in restricted regions.
       - HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}
     deploy:
       resources:

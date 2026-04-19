@@ -31,6 +31,7 @@ class TranscriptionPipeline:
         self._whisper = None
         self._diarization = None
         self._embedding_model = None
+        self._osd = None
 
     @property
     def whisper(self):
@@ -93,6 +94,28 @@ class TranscriptionPipeline:
             self._embedding_model = Inference(model, window="whole")
         return self._embedding_model
 
+    @property
+    def osd_pipeline(self):
+        if self._osd is None:
+            from pyannote.audio import Model
+            from pyannote.audio.pipelines import OverlappedSpeechDetection
+
+            logger.info("Loading pyannote OverlappedSpeechDetection")
+            seg_model = Model.from_pretrained(
+                "pyannote/segmentation-3.0",
+                use_auth_token=self.hf_token,
+            )
+            self._osd = OverlappedSpeechDetection(segmentation=seg_model)
+            self._osd.instantiate(
+                {
+                    "min_duration_on": 0.0,
+                    "min_duration_off": 0.0,
+                }
+            )
+            if self.device == "cuda":
+                self._osd.to(torch.device("cuda"))
+        return self._osd
+
     def transcribe(self, audio_path: str, language: str = "zh") -> dict:
         """Run faster-whisper and return a whisperx-compatible result dict.
 
@@ -149,6 +172,14 @@ class TranscriptionPipeline:
                 }
             )
         return turns
+
+    def detect_overlaps(self, audio_path: str) -> list[tuple[float, float]]:
+        """Return (start, end) intervals where ≥2 speakers are simultaneously active."""
+        osd_result = self.osd_pipeline({"audio": audio_path})
+        return [
+            (round(seg.start, 3), round(seg.end, 3))
+            for seg, _, _ in osd_result.itertracks(yield_label=True)
+        ]
 
     def extract_speaker_embeddings(
         self, audio_path: str, turns: list[dict]
@@ -315,11 +346,20 @@ class TranscriptionPipeline:
     def process(
         self,
         audio_path: str,
+        raw_audio_path: str = None,
         language: str = "zh",
         min_speakers: int = None,
         max_speakers: int = None,
+        detect_overlap: bool = False,
     ) -> dict:
-        """Full pipeline: transcribe → diarize → forced-align → extract embeddings."""
+        """Full pipeline: transcribe → diarize → forced-align → extract embeddings.
+
+        audio_path      — cleaned/denoised audio fed to Whisper and pyannote.
+        raw_audio_path  — original unprocessed audio for voiceprint extraction.
+                          Falls back to audio_path when not provided.
+        """
+        embed_path = raw_audio_path or audio_path
+
         logger.info("Starting transcription: %s", audio_path)
         transcription_result = self.transcribe(audio_path, language=language)
         logger.info(
@@ -337,9 +377,17 @@ class TranscriptionPipeline:
         aligned = self.align_segments(transcription_result, turns, audio_path)
         logger.info("Alignment done: %d segments", len(aligned))
 
-        logger.info("Extracting speaker embeddings")
-        embeddings = self.extract_speaker_embeddings(audio_path, turns)
+        logger.info("Extracting speaker embeddings from %s", embed_path)
+        embeddings = self.extract_speaker_embeddings(embed_path, turns)
         logger.info("Extracted embeddings for %d speakers", len(embeddings))
+
+        if detect_overlap:
+            logger.info("Running overlap speech detection")
+            overlap_intervals = self.detect_overlaps(audio_path)
+            logger.info("OSD found %d overlap intervals", len(overlap_intervals))
+            for seg in aligned:
+                mid = (seg["start"] + seg["end"]) / 2
+                seg["has_overlap"] = any(s <= mid <= e for s, e in overlap_intervals)
 
         return {
             "segments": aligned,

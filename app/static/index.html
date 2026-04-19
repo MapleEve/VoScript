@@ -213,12 +213,61 @@
           <label class="block text-xs font-medium text-muted-foreground mb-1.5">最多说话人</label>
           <input type="number" id="opt-max-spk" value="0" min="0" max="20" class="input">
         </div>
+        <!-- Row 2: denoise + osd -->
+        <div>
+          <label class="block text-xs font-medium text-muted-foreground mb-1.5" for="opt-denoise">降噪模式</label>
+          <select id="opt-denoise" class="input">
+            <option value="">自动 (环境默认)</option>
+            <option value="none">关闭</option>
+            <option value="deepfilternet">DeepFilterNet</option>
+          </select>
+        </div>
+        <div class="sm:col-span-4 flex items-center gap-2 pt-4 sm:pt-0 sm:pb-1">
+          <label class="inline-flex items-center gap-2 cursor-pointer select-none text-sm">
+            <input type="checkbox" id="opt-osd"
+                   class="h-4 w-4 rounded border border-input bg-transparent accent-primary cursor-pointer focus-ring">
+            <span>检测重叠语音 <span class="text-muted-foreground">(OSD)</span></span>
+          </label>
+        </div>
         <div class="sm:col-span-5 flex justify-end gap-2">
           <button class="btn-ghost" onclick="resetUpload()">取消</button>
           <button class="btn-default" onclick="startTranscribe()">开始转录</button>
         </div>
       </div>
     </div>
+
+    <!-- Feature status panel -->
+    <details class="card" id="feature-status-panel">
+      <summary class="flex items-center justify-between px-5 py-3.5 cursor-pointer select-none list-none hover:bg-accent/20 rounded-lg transition-colors">
+        <span class="text-sm font-medium">服务配置</span>
+        <svg id="feature-status-chevron" class="h-3.5 w-3.5 text-muted-foreground transition-transform duration-150" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </summary>
+      <div class="border-t px-5 py-4 space-y-3 text-xs">
+        <div class="flex items-start gap-2.5">
+          <span class="shrink-0 mt-px">&#x2705;</span>
+          <div>
+            <span class="font-medium text-foreground">声纹阈值</span>
+            <span id="cfg-voiceprint" class="text-muted-foreground ml-1">加载中…</span>
+          </div>
+        </div>
+        <div class="flex items-start gap-2.5">
+          <span class="shrink-0 mt-px text-base leading-none">&#x1F50A;</span>
+          <div>
+            <span class="font-medium text-foreground">降噪处理</span>
+            <span id="cfg-denoise" class="text-muted-foreground ml-1">加载中…</span>
+          </div>
+        </div>
+        <div class="flex items-start gap-2.5">
+          <span class="shrink-0 mt-px text-base leading-none">&#x1F5E3;</span>
+          <div>
+            <span class="font-medium text-foreground">重叠语音检测 (OSD)</span>
+            <span id="cfg-osd" class="text-muted-foreground ml-1">加载中…</span>
+          </div>
+        </div>
+      </div>
+    </details>
 
     <!-- Progress -->
     <div id="progress-panel" class="card p-6 hidden">
@@ -525,6 +574,9 @@
     if (lang) form.append('language', lang);
     form.append('min_speakers', document.getElementById('opt-min-spk').value);
     form.append('max_speakers', document.getElementById('opt-max-spk').value);
+    const denoiseVal = document.getElementById('opt-denoise').value;
+    if (denoiseVal) form.append('denoise_model', denoiseVal);
+    if (document.getElementById('opt-osd').checked) form.append('osd', 'true');
 
     document.getElementById('progress-panel').classList.remove('hidden');
     document.getElementById('result-panel').classList.add('hidden');
@@ -618,10 +670,14 @@
     const list = document.getElementById('segments-list');
     list.innerHTML = result.segments.map(seg => {
       const ci = colorMap[seg.speaker_label];
-      return `<div class="spk-${ci} spk-border border-l-2 pl-3 py-2 hover:bg-accent/30 rounded-sm transition-colors">
-        <div class="flex items-center gap-2 text-xs text-muted-foreground mb-0.5">
+      const overlapBadge = seg.has_overlap
+        ? `<span title="检测到重叠语音" class="inline-flex items-center gap-0.5 text-amber-400 border border-amber-400/40 bg-amber-400/10 px-1 py-px rounded text-[10px]">&#x26A0; 重叠</span>`
+        : '';
+      return `<div class="spk-${ci} spk-border border-l-2 pl-3 py-2 hover:bg-accent/30 rounded-sm transition-colors${seg.has_overlap ? ' bg-amber-400/5' : ''}">
+        <div class="flex items-center gap-2 text-xs text-muted-foreground mb-0.5 flex-wrap">
           <span>${formatTime(seg.start)} – ${formatTime(seg.end)}</span>
           <span class="spk-${ci} spk-badge px-1.5 py-px rounded text-[10px]">${escapeHtml(seg.speaker_name || seg.speaker_label)}</span>
+          ${overlapBadge}
         </div>
         <p class="text-sm leading-relaxed">${escapeHtml(seg.text || '')}</p>
       </div>`;
@@ -780,6 +836,51 @@
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   }
 
+  /* ========== feature status panel toggle ========== */
+  document.addEventListener('DOMContentLoaded', () => {
+    const det = document.getElementById('feature-status-panel');
+    const chev = document.getElementById('feature-status-chevron');
+    if (det && chev) {
+      det.addEventListener('toggle', () => {
+        chev.style.transform = det.open ? 'rotate(180deg)' : '';
+      });
+    }
+  });
+
+  /* ========== config panel ========== */
+  async function fetchConfig() {
+    try {
+      const resp = await apiFetch('/api/config');
+      if (!resp.ok) throw new Error('non-ok');
+      const cfg = await resp.json();
+
+      // Voiceprint
+      document.getElementById('cfg-voiceprint').textContent =
+        `自适应 — 基础阈值 ${cfg.voiceprint_threshold}，每位说话人自动松弛以降低漏识别率`;
+
+      // Denoise
+      const modelLabel = {
+        'none': '关闭',
+        'deepfilternet': 'DeepFilterNet',
+        'mossformer2': 'MossFormer2',
+        'noisereduce': 'noisereduce',
+      }[cfg.denoise_model] || cfg.denoise_model;
+      document.getElementById('cfg-denoise').textContent = cfg.denoise_model === 'none'
+        ? '关闭'
+        : `${modelLabel} — SNR < ${cfg.denoise_snr_threshold} dB 时自动启用；可在上传时手动指定或关闭`;
+
+      // OSD
+      document.getElementById('cfg-osd').textContent = cfg.osd_available
+        ? '可用 — 上传时勾选"检测重叠语音"即可开启，转录结果中会标注重叠片段'
+        : '不可用';
+    } catch {
+      const unavail = '配置不可用';
+      ['cfg-voiceprint', 'cfg-denoise', 'cfg-osd'].forEach(id => {
+        document.getElementById(id).textContent = unavail;
+      });
+    }
+  }
+
   /* ========== boot ========== */
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeSettings();
@@ -800,6 +901,7 @@
         const r = await fetch('/api/voiceprints');
         if (r.ok) {
           setKeyIndicator('ok');
+          fetchConfig();
         } else if (r.status === 401) {
           setAuthBanner('服务端开了 API_KEY 鉴权，请在右上角填 key。');
         }
@@ -808,7 +910,7 @@
     }
     const state = await testConnection();
     setKeyIndicator(state === 'ok' ? 'ok' : state === 'invalid' ? 'invalid' : 'unknown');
-    if (state === 'ok') setAuthBanner('');
+    if (state === 'ok') { setAuthBanner(''); fetchConfig(); }
     else if (state === 'invalid') setAuthBanner('API Key 不对 — 请重新填。');
     else setAuthBanner('连不上服务端，检查网络 / 端口。');
   });

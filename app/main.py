@@ -17,6 +17,7 @@ from fastapi.responses import (
     JSONResponse,
     PlainTextResponse,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from pipeline import TranscriptionPipeline
@@ -44,6 +45,133 @@ def _env_float(name: str, default: float) -> float:
 
 
 VOICEPRINT_THRESHOLD = _env_float("VOICEPRINT_THRESHOLD", 0.75)
+
+DENOISE_MODEL = os.getenv("DENOISE_MODEL", "none").strip().lower()
+
+# SNR threshold (dB) below which DeepFilterNet is applied.
+# Audio estimated at or above this level is considered clean and skipped,
+# matching the A/B finding that DF hurts high-quality recordings (e.g. PLAUD Pin).
+DENOISE_SNR_THRESHOLD = _env_float("DENOISE_SNR_THRESHOLD", 10.0)
+
+# Lazy module-level handle so DeepFilterNet loads once at first use.
+_df_model = None
+_df_state = None
+
+
+def _load_deepfilternet():
+    global _df_model, _df_state
+    if _df_model is None:
+        import os, shutil
+
+        if not shutil.which("git"):
+            fake = "/tmp/_fake_git"
+            if not os.path.exists(fake):
+                with open(fake, "w") as f:
+                    f.write("#!/bin/sh\necho unknown\nexit 0\n")
+                os.chmod(fake, 0o755)
+            os.environ["PATH"] = "/tmp:" + os.environ.get("PATH", "")
+        import df as _df_pkg
+
+        _df_model, _df_state, _ = _df_pkg.init_df()
+        logger.info("DeepFilterNet model loaded")
+    return _df_model, _df_state
+
+
+def _estimate_snr(wav_path: Path) -> float:
+    """Estimate signal-to-noise ratio (dB) using a simple energy-based heuristic.
+
+    Strategy: divide the audio into short frames, compute per-frame RMS energy,
+    then treat the bottom 20 % of frame energies as the noise floor and the top
+    80 % as the speech signal.  SNR = 10 * log10(speech_power / noise_power).
+
+    This is intentionally lightweight — no VAD model, no STFT — so it adds
+    negligible latency before deciding whether to invoke DeepFilterNet.
+    """
+    import math
+    import torchaudio
+
+    waveform, sr = torchaudio.load(str(wav_path))
+    # Flatten to mono
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+    waveform = waveform.squeeze(0)  # shape: (num_samples,)
+
+    # 30 ms frames
+    frame_len = max(1, int(sr * 0.03))
+    num_frames = len(waveform) // frame_len
+    if num_frames < 5:
+        # Too short to estimate reliably — assume clean
+        return float("inf")
+
+    frames = waveform[: num_frames * frame_len].reshape(num_frames, frame_len)
+    frame_rms = frames.pow(2).mean(dim=1).sqrt()  # shape: (num_frames,)
+
+    sorted_rms, _ = frame_rms.sort()
+    noise_cutoff = max(1, int(num_frames * 0.20))
+    noise_rms = sorted_rms[:noise_cutoff].mean().item()
+    speech_rms = sorted_rms[noise_cutoff:].mean().item()
+
+    if noise_rms < 1e-9:
+        return float("inf")  # Silent noise floor — effectively infinite SNR
+
+    snr_db = 10.0 * math.log10((speech_rms / noise_rms) ** 2)
+    return snr_db
+
+
+def _maybe_denoise(
+    wav_path: Path, model: str = None, snr_threshold: float = None
+) -> Path:
+    """Return denoised WAV path if DENOISE_MODEL is set; otherwise return wav_path unchanged."""
+    effective_model = (model or DENOISE_MODEL).strip().lower()
+    if effective_model == "none":
+        return wav_path
+
+    threshold = snr_threshold if snr_threshold is not None else DENOISE_SNR_THRESHOLD
+    out_path = wav_path.with_suffix(".denoised.wav")
+
+    if effective_model == "deepfilternet":
+        import torch, torchaudio
+
+        snr_db = _estimate_snr(wav_path)
+        if snr_db >= threshold:
+            logger.info("DeepFilterNet skipped (SNR=%.1fdB, clean audio)", snr_db)
+            return wav_path
+
+        logger.info(
+            "DeepFilterNet applying (SNR=%.1fdB < %.1fdB threshold)",
+            snr_db,
+            threshold,
+        )
+        model, df_state = _load_deepfilternet()
+        import df as _df_pkg
+
+        audio, sr = torchaudio.load(str(wav_path))
+        if sr != df_state.sr():
+            audio = torchaudio.functional.resample(audio, sr, df_state.sr())
+        audio = audio.contiguous()
+        with torch.backends.cudnn.flags(enabled=False):
+            enhanced = _df_pkg.enhance(model, df_state, audio)
+        torchaudio.save(
+            str(out_path),
+            enhanced.unsqueeze(0) if enhanced.dim() == 1 else enhanced,
+            df_state.sr(),
+        )
+        logger.info("DeepFilterNet: denoised %s → %s", wav_path.name, out_path.name)
+
+    elif effective_model == "noisereduce":
+        import numpy as np, soundfile as sf, noisereduce as nr
+
+        data, sr = sf.read(str(wav_path), dtype="float32")
+        reduced = nr.reduce_noise(y=data, sr=sr, stationary=True)
+        sf.write(str(out_path), reduced, sr)
+        logger.info("noisereduce: denoised %s → %s", wav_path.name, out_path.name)
+
+    else:
+        logger.warning("Unknown DENOISE_MODEL=%r — skipping denoising", effective_model)
+        return wav_path
+
+    return out_path
+
 
 API_KEY = (os.getenv("API_KEY") or "").strip() or None
 # Paths that must stay open even when API_KEY auth is enabled. "/" is the
@@ -80,12 +208,29 @@ else:
     logger.info("API_KEY auth enabled for /api/* and / (Bearer or X-API-Key).")
 
 app = FastAPI(title="Voice Transcribe", version="1.0.0")
+
+_cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.middleware("http")
 async def require_api_key(request: Request, call_next):
     if API_KEY is None:
+        return await call_next(request)
+
+    # CORS preflight: CORSMiddleware handles the response headers; we must
+    # not 401 before it runs.
+    if request.method == "OPTIONS":
         return await call_next(request)
 
     path = request.url.path
@@ -123,6 +268,12 @@ voiceprint_db = VoiceprintDB(str(VOICEPRINTS_DIR))
 
 # In-memory job status
 jobs: dict[str, dict] = {}
+
+# Serialise GPU work: only one transcription runs at a time.
+# Concurrent HTTP uploads are fine; they queue here before touching the GPU.
+import threading as _threading
+
+_gpu_sem = _threading.Semaphore(1)
 
 
 def _convert_to_wav(input_path: Path) -> Path:
@@ -164,20 +315,63 @@ def _convert_to_wav(input_path: Path) -> Path:
 
 
 def _run_transcription(
-    job_id: str, audio_path: Path, language: str, min_speakers: int, max_speakers: int
+    job_id: str,
+    audio_path: Path,
+    language: str,
+    min_speakers: int,
+    max_speakers: int,
+    denoise_model: str = None,
+    osd_enabled: bool = False,
+    snr_threshold: float = None,
 ):
     """Background transcription worker."""
     try:
         jobs[job_id]["status"] = "converting"
         wav_path = _convert_to_wav(audio_path)
 
-        jobs[job_id]["status"] = "transcribing"
-        result = pipeline.process(
-            str(wav_path),
-            language=language,
-            min_speakers=min_speakers or None,
-            max_speakers=max_speakers or None,
-        )
+        jobs[job_id]["status"] = "queued"
+        with _gpu_sem:
+            jobs[job_id]["status"] = (
+                "denoising"
+                if (denoise_model or DENOISE_MODEL) != "none"
+                else "transcribing"
+            )
+            clean_path = _maybe_denoise(wav_path, denoise_model, snr_threshold)
+
+            # DF peaks at ~15 GB reserved in PyTorch's CUDA cache.
+            # ctranslate2 (Whisper) calls cudaMalloc directly and sees the OS
+            # free memory — not PyTorch's allocator pool — so it OOMs unless we
+            # explicitly flush the cache before Whisper cold-loads.
+            try:
+                import torch as _torch
+                import gc as _gc
+
+                _gc.collect()
+                if _torch.cuda.is_available():
+                    _torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+            jobs[job_id]["status"] = "transcribing"
+            result = pipeline.process(
+                str(clean_path),
+                raw_audio_path=str(wav_path),
+                language=language,
+                min_speakers=min_speakers or None,
+                max_speakers=max_speakers or None,
+                detect_overlap=osd_enabled,
+            )
+
+        # Release cached CUDA memory so the next queued job has headroom
+        try:
+            import torch as _torch
+            import gc as _gc
+
+            _gc.collect()
+            if _torch.cuda.is_available():
+                _torch.cuda.empty_cache()
+        except Exception:
+            pass
 
         # Match speakers against voiceprint DB
         jobs[job_id]["status"] = "identifying"
@@ -207,6 +401,7 @@ def _run_transcription(
                 "speaker_id": match.get("matched_id"),
                 "speaker_name": match.get("matched_name", spk_label),
                 "similarity": match.get("similarity", 0),
+                "has_overlap": seg.get("has_overlap", False),
             }
             # Forward word-level timestamps when forced alignment produced them
             # (0.3.0+). Absent when the language has no alignment model or
@@ -268,6 +463,9 @@ async def transcribe(
     language: str = Form("zh"),
     min_speakers: int = Form(0),
     max_speakers: int = Form(0),
+    denoise_model: str = Form("none"),
+    osd: bool = Form(False),
+    snr_threshold: float = Form(None),
 ):
     job_id = f"tr_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
 
@@ -303,7 +501,16 @@ async def transcribe(
     }
     thread = Thread(
         target=_run_transcription,
-        args=(job_id, save_path, language, min_speakers, max_speakers),
+        args=(
+            job_id,
+            save_path,
+            language,
+            min_speakers,
+            max_speakers,
+            denoise_model,
+            osd,
+            snr_threshold,
+        ),
     )
     thread.start()
 
@@ -418,6 +625,16 @@ async def rename_voiceprint(speaker_id: str, name: str = Form(...)):
     except ValueError as e:
         raise HTTPException(404, str(e))
     return {"ok": True}
+
+
+@app.get("/api/config")
+async def get_config():
+    return {
+        "denoise_model": DENOISE_MODEL,
+        "denoise_snr_threshold": DENOISE_SNR_THRESHOLD,
+        "voiceprint_threshold": VOICEPRINT_THRESHOLD,
+        "osd_available": True,
+    }
 
 
 @app.get("/api/export/{tr_id}")
