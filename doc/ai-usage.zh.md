@@ -35,7 +35,9 @@
    （显示名）**。这是最容易踩的坑：当服务自动匹配到已有声纹时，
    `speaker_name` 会变成"张三"，但 `speaker_label` 永远是 `SPEAKER_00`。
    拿 `speaker_name` 去 enroll 必然返回 404。
-5. **`similarity >= 0.75` 才算匹配上**。低于这个阈值的 `speaker_id` 一定是 `null`，
+5. **声纹匹配阈值是自适应的**。基础阈值为 0.75，但每位说话人的实际阈值会根据已登记
+   样本的余弦方差自动放松（绝对下限 0.60）。`speaker_id` 非 `null` 意味着该说话人
+   通过了其对应的实际有效阈值；低于有效阈值时 `speaker_id` 一定是 `null`，
    `speaker_name` 会回落成 `SPEAKER_XX`。
 
 ## 推荐调用流程
@@ -74,7 +76,12 @@ with open("meeting.wav", "rb") as f:
         f"{BASE}/api/transcribe",
         headers=H,
         files={"file": f},
-        data={"language": "zh", "max_speakers": "4"},
+        data={
+            "language": "zh",
+            "max_speakers": "4",
+            # optional: "denoise_model": "deepfilternet",
+            # optional: "osd": "true",
+        },
     ).json()
 
 job_id = job["id"]
@@ -93,6 +100,8 @@ while True:
 for seg in result["segments"]:
     # 展示用 speaker_name，登记要用 speaker_label
     print(f"[{seg['start']:.1f}s] {seg['speaker_name']}: {seg['text']}")
+    # seg["has_overlap"] 仅在请求时传了 osd=true 时才存在——True 表示
+    # 该片段中点存在多人同时说话
 
 # 4. 登记（假设用户告诉你 SPEAKER_00 是"张三"）
 requests.post(
@@ -127,6 +136,7 @@ requests.post(
 | 轮询一直 `transcribing` | 音频较长或首次加载模型 | 继续轮询，别超过 20 分钟 |
 | `status = failed, error = "..."` | 容器内异常 | 直接把 `error` 字段报给用户，必要时看 `docker logs` |
 | `segments` 是空数组 | 音频静音 / 太短 / 采样率问题 | 告诉用户换一份音频，或确认文件没坏 |
+| `has_overlap 字段不存在` | 请求时没传 `osd=true` | 按需传 `osd=true`，默认关闭 |
 
 ## 不要做的事
 

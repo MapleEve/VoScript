@@ -38,8 +38,12 @@ with speaker names. This service (`voscript`) is the
    a known voiceprint, `speaker_name` becomes e.g. "Alice" but
    `speaker_label` stays `SPEAKER_00`. Passing `speaker_name` to enroll
    will 404.
-5. **`similarity >= 0.75` means matched.** Below that, `speaker_id` is
-   `null` and `speaker_name` falls back to the raw label.
+5. **The voiceprint match threshold is adaptive.** The base threshold is 0.75, but
+   each speaker's effective threshold is automatically relaxed based on the cosine
+   variance of their enrolled samples (absolute floor 0.60). A non-null `speaker_id`
+   means the speaker passed the effective threshold for that particular speaker.
+   Below the effective threshold, `speaker_id` is `null` and `speaker_name` falls
+   back to the raw label.
 
 ## Recommended flow
 
@@ -77,7 +81,12 @@ with open("meeting.wav", "rb") as f:
         f"{BASE}/api/transcribe",
         headers=H,
         files={"file": f},
-        data={"language": "en", "max_speakers": "4"},
+        data={
+            "language": "en",
+            "max_speakers": "4",
+            # optional: "denoise_model": "deepfilternet",
+            # optional: "osd": "true",
+        },
     ).json()
 
 job_id = job["id"]
@@ -96,6 +105,8 @@ while True:
 for seg in result["segments"]:
     # display with speaker_name, enroll with speaker_label
     print(f"[{seg['start']:.1f}s] {seg['speaker_name']}: {seg['text']}")
+    # seg["has_overlap"] is present when osd=true was passed — True means
+    # two or more speakers were detected talking simultaneously at this point
 
 # 4. enroll (if user told you SPEAKER_00 is Alice)
 requests.post(
@@ -130,6 +141,7 @@ auto-match.
 | polls stay on `transcribing` forever | long audio or cold model load | keep polling (cap at ~20 min) |
 | `status = failed, error = "..."` | exception inside the container | surface `error` to the user, check `docker logs` if needed |
 | empty `segments` | silent / too-short / broken audio | ask the user for a different file |
+| `has_overlap` field missing | `osd=true` was not passed in the request | Pass `osd=true` if you need overlap detection; it is off by default |
 
 ## Don't do this
 

@@ -2,6 +2,42 @@
 
 **简体中文** | [English](./changelog.en.md)
 
+## 0.4.0 — 自适应声纹阈值 + 降噪 SNR 门限 + OSD (2026-04-19)
+
+### 自适应声纹阈值
+
+- `VOICEPRINT_THRESHOLD` 现在是可配环境变量（默认 0.75），作为基础阈值
+- 每位说话人的实际阈值根据已登记样本的余弦方差自动放松：1 个样本固定 -0.05，2+ 个样本按 `min(3×std, 0.10)` 放松，绝对下限 0.60
+- 10 条 PLAUD Pin 录音 A/B 测试：召回率从 50% 提升到 70%，零误识别
+- 新增环境变量 `VOICEPRINT_THRESHOLD`（默认 `0.75`）
+
+### 降噪处理 + SNR 门限
+
+- 新增 `DENOISE_MODEL` 环境变量：`none`（默认）| `deepfilternet` | `noisereduce`
+- 新增 `DENOISE_SNR_THRESHOLD` 环境变量（默认 `10.0` dB）：SNR 达到或超过此值时跳过降噪，避免对高质量录音做不必要处理
+- 任务流水线新增 `denoising` 状态（converting 之后、transcribing 之前，仅在启用降噪时出现）
+- `POST /api/transcribe` 新增 `denoise_model`（字符串）和 `snr_threshold`（浮点数）两个可选字段，支持单次请求级别覆盖
+- DeepFilterNet 对高 SNR 录音（>10 dB）有害：段数增加 100-145%，代理 CER 劣化 20-91%。SNR 门限可自动保护干净音频
+- CUDA OOM 修复：DeepFilterNet 处理长音频后（~15 GB PyTorch CUDA 保留），在调用 Whisper 前执行 `torch.cuda.empty_cache()` + `gc.collect()` 解决 ctranslate2 的 OOM 问题
+
+### 重叠语音检测 OSD
+
+- `POST /api/transcribe` 新增 `osd`（bool，默认 `false`）字段
+- 启用时，每个 segment 包含 `has_overlap: bool` 字段，标记该片段中点是否存在多人同时说话
+- 底层使用 `pyannote/segmentation-3.0`（与分离流水线共享，无需额外下载）
+- 10 条真实会议录音平均 9.7% 片段重叠率，在正常对话范围内
+
+### 结果结构变化
+
+- 每个已完成任务的结果新增顶层 `params` 对象，记录本次转录实际使用的配置（语言、降噪模型、SNR 门限、声纹阈值、OSD 开关、说话人数约束）
+- 移除 `/api/config` 全局接口——配置随任务结果一起返回，接口更独立
+
+### 兼容性
+
+- HTTP 合同完全兼容：`has_overlap` 和 `params` 都是新增字段，老客户端直接忽略
+- 除非启用降噪，否则对 PLAUD Pin 等高质量设备的录音处理方式不变
+- 建议配置：`DENOISE_MODEL=none`（PLAUD Pin / 高质量麦克风）；`DENOISE_MODEL=deepfilternet` + `DENOISE_SNR_THRESHOLD=10.0`（噪声环境）
+
 ## 0.3.0 — WhisperX 强制对齐 + sqlite 声纹库 + WeSpeaker 升级 (2026-04-18)
 
 三个独立的核心组件升级，一起发布：

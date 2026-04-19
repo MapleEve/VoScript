@@ -2,6 +2,42 @@
 
 [简体中文](./changelog.zh.md) | **English**
 
+## 0.4.0 — Adaptive voiceprint threshold + noise reduction SNR gate + OSD (2026-04-19)
+
+### Adaptive voiceprint threshold
+
+- `VOICEPRINT_THRESHOLD` is now a configurable env var (default `0.75`) used as the base threshold.
+- Each speaker's effective threshold is automatically relaxed based on the cosine variance of their enrolled samples: 1 sample gives a fixed −0.05 relaxation; 2+ samples apply `min(3×std, 0.10)`; absolute floor is 0.60.
+- A/B test on 10 PLAUD Pin recordings: recall improved from 50% to 70% with zero false identifications.
+- New env var: `VOICEPRINT_THRESHOLD` (default `0.75`).
+
+### Noise reduction + SNR gate
+
+- New env var `DENOISE_MODEL`: `none` (default) | `deepfilternet` | `noisereduce`.
+- New env var `DENOISE_SNR_THRESHOLD` (default `10.0` dB): when the recording's SNR is at or above this value, denoising is skipped to avoid degrading already-clean audio.
+- New `denoising` pipeline status (inserted after `converting`, before `transcribing`; only appears when denoising is enabled).
+- `POST /api/transcribe` gains two optional fields: `denoise_model` (string) and `snr_threshold` (float), allowing per-request overrides.
+- DeepFilterNet harms high-SNR recordings (>10 dB): segment count increases 100–145%, proxy CER degrades 20–91%. The SNR gate protects clean audio automatically.
+- CUDA OOM fix: after DeepFilterNet processes long audio (~15 GB PyTorch CUDA reserved), `torch.cuda.empty_cache()` + `gc.collect()` are called before invoking Whisper, resolving ctranslate2 OOM.
+
+### Overlapped speech detection (OSD)
+
+- `POST /api/transcribe` gains an `osd` field (bool, default `false`).
+- When enabled, each segment includes a `has_overlap: bool` field indicating whether two or more speakers were detected talking simultaneously at that segment's midpoint.
+- Uses `pyannote/segmentation-3.0` (shared with the diarization pipeline — no additional model download needed).
+- Average of 9.7% overlapping segments across 10 real meeting recordings, within the expected range for normal conversation.
+
+### Result structure changes
+
+- A top-level `params` object is now included in every completed job result, recording the actual configuration used for that transcription run (language, denoise model, SNR threshold, voiceprint threshold, OSD flag, speaker count constraints).
+- The `GET /api/config` global endpoint has been removed — configuration is returned alongside job results, making each result self-contained.
+
+### Compatibility
+
+- HTTP contract is fully backwards-compatible: `has_overlap` and `params` are additive fields; old clients ignore them.
+- Recordings from high-quality devices such as PLAUD Pin are handled identically unless denoising is explicitly enabled.
+- Recommended config: `DENOISE_MODEL=none` (PLAUD Pin / high-quality mic); `DENOISE_MODEL=deepfilternet` + `DENOISE_SNR_THRESHOLD=10.0` (noisy environments).
+
 ## 0.3.0 — WhisperX alignment + sqlite voiceprint DB + WeSpeaker (2026-04-18)
 
 Three independent core upgrades released together.

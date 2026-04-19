@@ -8,10 +8,11 @@ labelled with speaker names, and that auto-recognizes returning voices
 across recordings.
 
 ```
-Audio  ──►  faster-whisper large-v3  (transcription)
-        ──►  pyannote 3.1             (speaker diarization)
-        ──►  ECAPA-TDNN               (speaker embeddings)
-        ──►  VoiceprintDB             (cosine match vs. enrolled speakers)
+Audio  ──►  faster-whisper large-v3              (transcription)
+        ──►  pyannote 3.1                         (speaker diarization)
+        ──►  DeepFilterNet / noisereduce (optional denoising)
+        ──►  WeSpeaker ResNet34                   (speaker embeddings)
+        ──►  VoiceprintDB                         (cosine match vs. enrolled speakers)
         ──►  timestamped text with identified speaker names
 ```
 
@@ -45,10 +46,13 @@ AI agents deploying the service for a user: read the
 
 ## Features
 
-- **Async job pipeline**: `queued → converting → transcribing → identifying → completed`
+- **Async job pipeline**: `queued → converting → denoising (optional) → transcribing → identifying → completed`
 - **Chinese + multilingual transcription** (WhisperX + faster-whisper large-v3, **word-level timestamps** via forced alignment)
 - **Speaker diarization** (pyannote 3.1) + **WeSpeaker ResNet34** embeddings
-- **Persistent voiceprints**: enroll once, auto-match across future recordings (cosine similarity ≥ 0.75). sqlite + sqlite-vec under the hood — top-k nearest-neighbour search scales to thousands of speakers
+- **Adaptive voiceprint threshold**: `VOICEPRINT_THRESHOLD` (default 0.75) is the base; the actual threshold relaxes per-speaker based on intra-cluster std of enrolled embeddings — fixed −0.05 for 1 sample, `min(3×std, 0.10)` for 2+, floor at 0.60. Lifted recall from 50% to 70% on 10 real recordings with zero false positives
+- **Optional denoising with SNR gate**: `DENOISE_MODEL` (`none` | `deepfilternet` | `noisereduce`); `DENOISE_SNR_THRESHOLD` (default 10.0 dB) — audio above this SNR is considered clean and skipped automatically, preventing DeepFilterNet from degrading already-clean recordings
+- **Overlapped Speech Detection (OSD)**: pass `osd=true` per request; each segment gets a `has_overlap` field via pyannote segmentation-3.0. ~9.7% overlap rate observed across 10 real meetings
+- **Persistent voiceprints**: enroll once, auto-match across future recordings. sqlite + sqlite-vec under the hood — top-k nearest-neighbour search scales to thousands of speakers
 - **Stable HTTP contract**: `/api/transcribe`, `/api/jobs/{id}`, `/api/voiceprints*`, etc. — any HTTP client works
 - **Container runs as non-root**; all `/api/*` routes accept optional Bearer / `X-API-Key` auth (constant-time compare); uploads capped by `MAX_UPLOAD_BYTES`; voiceprint DB is concurrency-safe with atomic writes — full hardening list in [`doc/security.en.md`](./doc/security.en.md)
 - Minimal built-in web UI at `/` for manual testing

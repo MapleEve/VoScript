@@ -27,8 +27,8 @@
 ```
 POST /api/transcribe
     ↓
-queued → converting → transcribing → identifying → completed
-                                                  ↘ failed
+queued → converting → denoising (if DENOISE_MODEL ≠ none) → transcribing → identifying → completed
+                                                                                              ↘ failed
 ```
 
 OpenPlaud(Maple) worker 每 5 秒轮询一次 `/api/jobs/{id}`，看到 `completed`
@@ -53,6 +53,9 @@ curl http://localhost:8780/healthz
 | `language` | string | 选填，ISO 639-1，默认 `zh` |
 | `min_speakers` | int | 选填，`0` 表示自动 |
 | `max_speakers` | int | 选填，`0` 表示自动 |
+| `denoise_model` | string | 选填。降噪后端：`none`（默认）、`deepfilternet`、`noisereduce`。仅对本次请求生效，覆盖容器环境变量 `DENOISE_MODEL`。 |
+| `snr_threshold` | float | 选填。信噪比门限（dB），仅对本次请求生效。音频信噪比达到或超过此值时跳过降噪。覆盖 `DENOISE_SNR_THRESHOLD`。 |
+| `osd` | bool | 选填，默认 `false`。启用重叠语音检测，为每个 segment 标注 `has_overlap` 字段，需额外进行一次模型推理。 |
 
 响应（200）：
 
@@ -82,7 +85,9 @@ curl -X POST http://localhost:8780/api/transcribe \
      -H "Authorization: Bearer $API_KEY" \
      -F "file=@meeting.wav" \
      -F "language=zh" \
-     -F "max_speakers=4"
+     -F "max_speakers=4" \
+     -F "denoise_model=deepfilternet" \
+     -F "osd=true"
 ```
 
 ### `GET /api/jobs/{id}` — 查询任务
@@ -107,12 +112,22 @@ curl -X POST http://localhost:8780/api/transcribe \
         "speaker_id": "spk_...",
         "speaker_name": "张三",
         "similarity": 0.8421,
+        "has_overlap": false,
         "words": [
           { "word": "一边", "start": 0.02, "end": 0.35, "score": 0.93 },
           { "word": "是",   "start": 0.35, "end": 0.48, "score": 0.88 }
         ]
       }
-    ]
+    ],
+    "params": {
+      "language": "zh",
+      "denoise_model": "none",
+      "snr_threshold": 10.0,
+      "voiceprint_threshold": 0.75,
+      "osd": false,
+      "min_speakers": 0,
+      "max_speakers": 0
+    }
   }
 }
 ```
@@ -126,6 +141,12 @@ curl -X POST http://localhost:8780/api/transcribe \
 **`words[]` 是 0.3.0 起新增的可选字段**（WhisperX forced alignment 输出）。
 每个字/词有独立的 `start`/`end`/`score`。中文对齐模型有时会失败——失败时这
 个字段缺失，不会阻塞任务完成。老客户端不认识这个字段时直接忽略即可。
+
+**`has_overlap`** 仅在提交任务时传入 `osd=true` 时出现。`true` 表示该 segment
+中间时间点处有两个或以上说话人同时发言。
+
+**`params`** 记录本次任务实际采用的处理参数，包含所有请求级覆盖值，使每条结果
+都可独立解读，无需再查原始请求。
 
 ### `GET /api/transcriptions` — 列出所有历史任务
 

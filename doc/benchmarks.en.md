@@ -109,3 +109,112 @@ Mitigations (from 0.3.1):
   cosine past 0.80 across sessions
 - Medium-term: **per-speaker adaptive thresholds** (loosen based on the
   spread of that speaker's existing samples)
+
+---
+
+## 2. Adaptive Voiceprint Threshold A/B (10 PLAUD Pin recordings, 2026-04-19)
+
+`VOICEPRINT_THRESHOLD` sets the base threshold (default 0.75). The engine
+applies per-speaker adaptive relaxation based on intra-cluster standard
+deviation:
+
+- 1 enrolled sample → fixed -0.05 relaxation (single sample has no variance data)
+- 2+ enrolled samples → `min(3 × intra_cluster_std, 0.10)` relaxation
+- Absolute floor: effective threshold never drops below 0.60
+- Formula: `effective = max(0.60, base - relaxation)`
+- With 2 enrolled samples (spread = 0.0261): effective = max(0.60, 0.75 - 0.0783) = **0.6717**
+
+**A/B table (10 recordings, 1 enrolled speaker)**:
+
+| Recording | Similarity | Static 0.75 | Adaptive 0.6717 | Change |
+|---|---|---|---|---|
+| plaud_1 | 0.7160 | miss | hit | new identification |
+| plaud_2 | 0.9099 | hit | hit | unchanged |
+| plaud_3 | 0.7135 | miss | hit | new identification |
+| plaud_4 | 0.0000 | miss | miss | unchanged (absent) |
+| plaud_5 | 0.9078 | hit | hit | unchanged |
+| plaud_6 | 0.0000 | miss | miss | unchanged (absent) |
+| plaud_7 | 0.0000 | miss | miss | unchanged (absent) |
+| plaud_8 | 0.7626 | hit | hit | unchanged |
+| plaud_9 | 0.7737 | hit | hit | unchanged |
+| plaud_10 | 0.9126 | hit | hit | unchanged |
+
+**Summary**:
+
+| Mode | Recall (n=10) | False positives |
+|---|---|---|
+| Static 0.75 | 5/10 (50%) | 0 |
+| Adaptive (effective 0.6717) | 7/10 (70%) | 0 |
+
+plaud_1 and plaud_3 (similarity 0.716 and 0.714) are genuine participation
+segments recorded in low-noise meeting rooms, falling just below the static
+threshold. The three recordings near 0.00 (speaker absent or silent) are
+correctly rejected by both modes.
+
+---
+
+## 3. DeepFilterNet Harm on High-SNR Audio (2026-04-19)
+
+**SNR measurements — 10 PLAUD Pin recordings**:
+
+| Recording | SNR (dB) | Gate at 15 dB | Gate at 10 dB |
+|---|---|---|---|
+| plaud_1 | 18.8 | applied | skipped |
+| plaud_2 | 20.7 | skipped | skipped |
+| plaud_3 | 26.0 | skipped | skipped |
+| plaud_4 | 21.1 | skipped | skipped |
+| plaud_5 | 20.1 | skipped | skipped |
+| plaud_6 | 22.4 | skipped | skipped |
+| plaud_7 | 20.1 | skipped | skipped |
+| plaud_8 | 19.7 | applied | skipped |
+| plaud_9 | 25.7 | skipped | skipped |
+| plaud_10 | 12.4 | applied | skipped |
+
+All 10 PLAUD Pin recordings have SNR ≥ 10 dB. With threshold = 10 dB, every
+recording is skipped.
+
+**Segment fragmentation when DF is applied to clean audio**:
+
+| Recording | Segments (no DF) | Segments (with DF) | Increase |
+|---|---|---|---|
+| plaud_8 (13.5 min) | 206 | 505 | +145% |
+| plaud_10 (17.5 min) | 155 | 324 | +109% |
+| plaud_9 (DF skipped at SNR 25.7 dB) | 351 | 352 | +0.3% |
+
+After lowering the SNR threshold to 10 dB and re-running plaud_8, fragmentation
+dropped from +145% to +1.5%.
+
+**Word-level content divergence**: Total character count difference is near
+zero (-0.1%, neutral), but proxy CER ranges from 20–91% across recordings when
+DF is applied. plaud_9 (DF skipped) showed only 4.3% proxy CER — consistent
+with Whisper's natural non-determinism baseline.
+
+Conclusion: `DENOISE_MODEL=none` is the correct setting for PLAUD Pin and
+similar high-quality microphones. `DENOISE_SNR_THRESHOLD=10.0` ensures that
+genuinely noisy recordings (SNR < 10 dB) still get processed when
+`DENOISE_MODEL=deepfilternet`.
+
+---
+
+## 4. Overlapped Speech Detection (OSD) Statistics (2026-04-19)
+
+**10 PLAUD Pin recordings with `osd=true`**:
+
+| Recording | Speakers | Segments | Overlap segs | Seg overlap% | Duration overlap% |
+|---|---|---|---|---|---|
+| plaud_1 | 2 | 117 | 7 | 6.0% | 3.9% |
+| plaud_2 | 3 | 162 | 19 | 11.7% | 8.9% |
+| plaud_3 | 2 | 109 | 1 | 0.9% | 0.4% |
+| plaud_4 | 2 | 232 | 33 | 14.2% | 8.7% |
+| plaud_5 | 2 | 238 | 27 | 11.3% | 9.4% |
+| plaud_6 | 2 | 212 | 18 | 8.5% | 4.8% |
+| plaud_7 | 2 | 151 | 13 | 8.6% | 5.9% |
+| plaud_8 | 3 | 222 | 34 | 15.3% | 10.7% |
+| plaud_9 | 3 | 362 | 24 | 6.6% | 6.1% |
+| plaud_10 | 2 | 352 | 34 | 9.7% | 4.3% |
+| **Total** | | **2157** | **210** | **9.7%** | |
+
+A 9.7% segment overlap rate is within the normal range for natural meeting
+conversation (academic baseline 10–15%). 3-speaker recordings average 11.2%
+overlap; 2-speaker recordings average 8.7%. No speaker separation pipeline
+is needed at current overlap rates.

@@ -28,8 +28,8 @@ returns 401.
 ```
 POST /api/transcribe
     ↓
-queued → converting → transcribing → identifying → completed
-                                                  ↘ failed
+queued → converting → denoising (if DENOISE_MODEL ≠ none) → transcribing → identifying → completed
+                                                                                              ↘ failed
 ```
 
 The OpenPlaud(Maple) worker polls `/api/jobs/{id}` every 5 seconds and stops
@@ -54,6 +54,9 @@ Form fields:
 | `language` | string | Optional, ISO 639-1, default `zh` |
 | `min_speakers` | int | Optional, `0` = auto |
 | `max_speakers` | int | Optional, `0` = auto |
+| `denoise_model` | string | Optional. Noise reduction backend: `none` (default), `deepfilternet`, `noisereduce`. Overrides the `DENOISE_MODEL` container env for this request only. |
+| `snr_threshold` | float | Optional. SNR gate threshold (dB) for this request only. Audio at or above this level skips denoising. Overrides `DENOISE_SNR_THRESHOLD`. |
+| `osd` | bool | Optional, default `false`. Enable overlapped speech detection. Annotates each segment with `has_overlap` field. Adds one extra model pass. |
 
 Response (200):
 
@@ -108,12 +111,22 @@ curl -X POST http://localhost:8780/api/transcribe \
         "speaker_id": "spk_...",
         "speaker_name": "Alice",
         "similarity": 0.8421,
+        "has_overlap": false,
         "words": [
           { "word": "This", "start": 0.05, "end": 0.18, "score": 0.98 },
           { "word": "is",   "start": 0.18, "end": 0.29, "score": 0.96 }
         ]
       }
-    ]
+    ],
+    "params": {
+      "language": "en",
+      "denoise_model": "none",
+      "snr_threshold": 10.0,
+      "voiceprint_threshold": 0.75,
+      "osd": false,
+      "min_speakers": 0,
+      "max_speakers": 0
+    }
   }
 }
 ```
@@ -131,6 +144,13 @@ alignment output). Each entry carries its own `start`/`end`/`score`.
 Alignment for some Chinese utterances can fail; when it does, the key is
 simply absent from the segment, the job still finishes. Clients that
 don't recognize the field should just ignore it.
+
+**`has_overlap`** is present only when `osd=true` was passed. `true` means
+two or more speakers were simultaneously active at that segment's midpoint.
+
+**`params`** records the effective settings used for this specific job,
+including any per-request overrides. Makes each result self-contained —
+no need to cross-reference the original request.
 
 ### `GET /api/transcriptions` — list past jobs
 
