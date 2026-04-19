@@ -237,10 +237,10 @@
     </div>
 
     <!-- Feature status panel -->
-    <details class="card" id="feature-status-panel">
+    <details class="card hidden" id="job-params-panel">
       <summary class="flex items-center justify-between px-5 py-3.5 cursor-pointer select-none list-none hover:bg-accent/20 rounded-lg transition-colors">
-        <span class="text-sm font-medium">服务配置</span>
-        <svg id="feature-status-chevron" class="h-3.5 w-3.5 text-muted-foreground transition-transform duration-150" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <span class="text-sm font-medium">本次转录参数</span>
+        <svg class="h-3.5 w-3.5 text-muted-foreground transition-transform duration-150" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </summary>
@@ -249,21 +249,21 @@
           <span class="shrink-0 mt-px">&#x2705;</span>
           <div>
             <span class="font-medium text-foreground">声纹阈值</span>
-            <span id="cfg-voiceprint" class="text-muted-foreground ml-1">加载中…</span>
+            <span id="cfg-voiceprint" class="text-muted-foreground ml-1"></span>
           </div>
         </div>
         <div class="flex items-start gap-2.5">
           <span class="shrink-0 mt-px text-base leading-none">&#x1F50A;</span>
           <div>
             <span class="font-medium text-foreground">降噪处理</span>
-            <span id="cfg-denoise" class="text-muted-foreground ml-1">加载中…</span>
+            <span id="cfg-denoise" class="text-muted-foreground ml-1"></span>
           </div>
         </div>
         <div class="flex items-start gap-2.5">
           <span class="shrink-0 mt-px text-base leading-none">&#x1F5E3;</span>
           <div>
             <span class="font-medium text-foreground">重叠语音检测 (OSD)</span>
-            <span id="cfg-osd" class="text-muted-foreground ml-1">加载中…</span>
+            <span id="cfg-osd" class="text-muted-foreground ml-1"></span>
           </div>
         </div>
       </div>
@@ -639,6 +639,18 @@
     document.getElementById('result-title').textContent = result.filename || result.id;
     document.getElementById('result-meta').textContent = `${result.segments.length} 段 · ${(result.unique_speakers || []).length} 位说话人 · 语言 ${result.language || '?'}`;
 
+    // Populate per-job params panel
+    const p = result.params;
+    if (p) {
+      const modelLabel = { none: '关闭', deepfilternet: 'DeepFilterNet', noisereduce: 'noisereduce' }[p.denoise_model] || p.denoise_model;
+      document.getElementById('cfg-voiceprint').textContent = `自适应 — 基础阈值 ${p.voiceprint_threshold}`;
+      document.getElementById('cfg-denoise').textContent = p.denoise_model === 'none'
+        ? '关闭'
+        : `${modelLabel} — SNR < ${p.snr_threshold} dB 时启用`;
+      document.getElementById('cfg-osd').textContent = p.osd ? '已开启' : '未开启';
+      document.getElementById('job-params-panel').classList.remove('hidden');
+    }
+
     // map every distinct speaker_label to a color idx
     const labels = [...new Set(result.segments.map(s => s.speaker_label))];
     const colorMap = {};
@@ -847,40 +859,6 @@
     }
   });
 
-  /* ========== config panel ========== */
-  async function fetchConfig() {
-    try {
-      const resp = await apiFetch('/api/config');
-      if (!resp.ok) throw new Error('non-ok');
-      const cfg = await resp.json();
-
-      // Voiceprint
-      document.getElementById('cfg-voiceprint').textContent =
-        `自适应 — 基础阈值 ${cfg.voiceprint_threshold}，每位说话人自动松弛以降低漏识别率`;
-
-      // Denoise
-      const modelLabel = {
-        'none': '关闭',
-        'deepfilternet': 'DeepFilterNet',
-        'mossformer2': 'MossFormer2',
-        'noisereduce': 'noisereduce',
-      }[cfg.denoise_model] || cfg.denoise_model;
-      document.getElementById('cfg-denoise').textContent = cfg.denoise_model === 'none'
-        ? '关闭'
-        : `${modelLabel} — SNR < ${cfg.denoise_snr_threshold} dB 时自动启用；可在上传时手动指定或关闭`;
-
-      // OSD
-      document.getElementById('cfg-osd').textContent = cfg.osd_available
-        ? '可用 — 上传时勾选"检测重叠语音"即可开启，转录结果中会标注重叠片段'
-        : '不可用';
-    } catch {
-      const unavail = '配置不可用';
-      ['cfg-voiceprint', 'cfg-denoise', 'cfg-osd'].forEach(id => {
-        document.getElementById(id).textContent = unavail;
-      });
-    }
-  }
-
   /* ========== boot ========== */
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeSettings();
@@ -901,7 +879,6 @@
         const r = await fetch('/api/voiceprints');
         if (r.ok) {
           setKeyIndicator('ok');
-          fetchConfig();
         } else if (r.status === 401) {
           setAuthBanner('服务端开了 API_KEY 鉴权，请在右上角填 key。');
         }
@@ -910,7 +887,7 @@
     }
     const state = await testConnection();
     setKeyIndicator(state === 'ok' ? 'ok' : state === 'invalid' ? 'invalid' : 'unknown');
-    if (state === 'ok') { setAuthBanner(''); fetchConfig(); }
+    if (state === 'ok') { setAuthBanner(''); }
     else if (state === 'invalid') setAuthBanner('API Key 不对 — 请重新填。');
     else setAuthBanner('连不上服务端，检查网络 / 端口。');
   });

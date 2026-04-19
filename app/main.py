@@ -411,6 +411,10 @@ def _run_transcription(
             segments.append(out)
 
         # Save transcription result
+        effective_denoise = (denoise_model or DENOISE_MODEL).strip().lower()
+        effective_snr = (
+            snr_threshold if snr_threshold is not None else DENOISE_SNR_THRESHOLD
+        )
         tr = {
             "id": job_id,
             "filename": audio_path.name,
@@ -420,6 +424,15 @@ def _run_transcription(
             "segments": segments,
             "speaker_map": speaker_map,
             "unique_speakers": result["unique_speakers"],
+            "params": {
+                "language": language,
+                "denoise_model": effective_denoise,
+                "snr_threshold": effective_snr,
+                "voiceprint_threshold": VOICEPRINT_THRESHOLD,
+                "osd": osd_enabled,
+                "min_speakers": min_speakers,
+                "max_speakers": max_speakers,
+            },
         }
 
         tr_dir = TRANSCRIPTIONS_DIR / job_id
@@ -625,16 +638,6 @@ async def rename_voiceprint(speaker_id: str, name: str = Form(...)):
     except ValueError as e:
         raise HTTPException(404, str(e))
     return {"ok": True}
-
-
-@app.get("/api/config")
-async def get_config():
-    return {
-        "denoise_model": DENOISE_MODEL,
-        "denoise_snr_threshold": DENOISE_SNR_THRESHOLD,
-        "voiceprint_threshold": VOICEPRINT_THRESHOLD,
-        "osd_available": True,
-    }
 
 
 @app.get("/api/export/{tr_id}")
