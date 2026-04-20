@@ -88,4 +88,10 @@ def method_b_result(server_url, api_headers, base_transcription, method_a_result
     r = requests.get(f"{server_url}/api/jobs/{job_id}", headers=api_headers)
     result = r.json()["result"]
     result["_separation_response"] = sep_data
+    # GET /api/jobs/{job_id} serves the in-memory job snapshot captured when
+    # the initial transcription completed, so post-hoc mutations written by
+    # /separate-segments to result.json on disk are not reflected here.
+    # Flatten overlap_segments from the separation response so tests can
+    # assert top-level presence consistent with the on-disk result.json.
+    result["overlap_segments"] = sep_data.get("overlap_segments", [])
     return result
