@@ -293,8 +293,25 @@
           </div>
         </div>
 
+        <div id="overlap-stats-panel" class="hidden mt-3 p-3 rounded-md border border-amber-400/30 bg-amber-400/5">
+          <div class="text-xs font-medium text-amber-400 mb-2">&#x26A0; 重叠语音统计</div>
+          <div class="flex gap-4 text-xs text-muted-foreground">
+            <span>重叠率 <span id="overlap-ratio" class="font-medium text-foreground">-</span></span>
+            <span>时长 <span id="overlap-duration" class="font-medium text-foreground">-</span></span>
+            <span>区段数 <span id="overlap-count" class="font-medium text-foreground">-</span></span>
+          </div>
+        </div>
+
         <div id="speaker-legend" class="flex flex-wrap gap-1.5 mb-4"></div>
         <div id="segments-list" class="space-y-0.5 max-h-[60vh] overflow-y-auto scroll-slim pr-2"></div>
+
+        <div id="separated-tracks-panel" class="hidden mt-4">
+          <div class="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
+            <span>&#x1F399; 分离音轨转录</span>
+            <span class="text-[10px] bg-muted px-1.5 py-px rounded">MossFormer2</span>
+          </div>
+          <div id="separated-tracks-list" class="space-y-3"></div>
+        </div>
       </div>
 
       <!-- Enroll panel -->
@@ -651,6 +668,21 @@
       document.getElementById('job-params-panel').classList.remove('hidden');
     }
 
+    // Overlap stats summary
+    const overlapPanel = document.getElementById('overlap-stats-panel');
+    if (result.overlap_stats && result.overlap_stats.ratio > 0) {
+      const os = result.overlap_stats;
+      const ratioPercent = Math.round(os.ratio * 100);
+      const overlapS = os.overlap_s.toFixed(1);
+      const totalS = os.total_s.toFixed(1);
+      document.getElementById('overlap-ratio').textContent = `${ratioPercent}%`;
+      document.getElementById('overlap-duration').textContent = `${overlapS}s / ${totalS}s`;
+      document.getElementById('overlap-count').textContent = `${os.count} 处`;
+      overlapPanel.classList.remove('hidden');
+    } else {
+      overlapPanel.classList.add('hidden');
+    }
+
     // map every distinct speaker_label to a color idx
     const labels = [...new Set(result.segments.map(s => s.speaker_label))];
     const colorMap = {};
@@ -694,6 +726,27 @@
         <p class="text-sm leading-relaxed">${escapeHtml(seg.text || '')}</p>
       </div>`;
     }).join('');
+
+    // Separated tracks
+    const sepPanel = document.getElementById('separated-tracks-panel');
+    const sepList = document.getElementById('separated-tracks-list');
+    if (result.separated_tracks && result.separated_tracks.length > 0) {
+      sepList.innerHTML = result.separated_tracks.map(track => {
+        const trackSegs = (track.segments || [])
+          .filter(s => s.text && s.text.trim())
+          .map(s => `<div class="py-1 border-b border-border/50 last:border-0">
+            <span class="text-[10px] text-muted-foreground mr-2">${formatTime(s.start)}–${formatTime(s.end)}</span>
+            <span class="text-sm">${escapeHtml(s.text)}</span>
+          </div>`).join('');
+        return `<div class="border rounded-md p-3">
+          <div class="text-xs font-medium mb-2 text-muted-foreground">说话人 ${track.track}</div>
+          <div class="space-y-0.5">${trackSegs || '<span class="text-xs text-muted-foreground">无识别内容</span>'}</div>
+        </div>`;
+      }).join('');
+      sepPanel.classList.remove('hidden');
+    } else {
+      sepPanel.classList.add('hidden');
+    }
 
     // Enroll grid — one card per raw speaker_label
     const enroll = document.getElementById('enroll-grid');

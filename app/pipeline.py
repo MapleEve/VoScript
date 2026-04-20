@@ -32,6 +32,8 @@ class TranscriptionPipeline:
         self._diarization = None
         self._embedding_model = None
         self._osd = None
+        self._osd_onset = 0.5
+        self._clearvoice = None
 
     @property
     def whisper(self):
@@ -100,7 +102,10 @@ class TranscriptionPipeline:
             from pyannote.audio import Model
             from pyannote.audio.pipelines import OverlappedSpeechDetection
 
-            logger.info("Loading pyannote OverlappedSpeechDetection")
+            logger.info(
+                "Loading pyannote OverlappedSpeechDetection (onset=%.4f)",
+                self._osd_onset,
+            )
             seg_model = Model.from_pretrained(
                 "pyannote/segmentation-3.0",
                 use_auth_token=self.hf_token,
@@ -110,13 +115,15 @@ class TranscriptionPipeline:
                 {
                     "min_duration_on": 0.0,
                     "min_duration_off": 0.0,
+                    "onset": self._osd_onset,
+                    "offset": self._osd_onset,
                 }
             )
             if self.device == "cuda":
                 self._osd.to(torch.device("cuda"))
         return self._osd
 
-    def transcribe(self, audio_path: str, language: str = "zh") -> dict:
+    def transcribe(self, audio_path: str, language: str = None) -> dict:
         """Run faster-whisper and return a whisperx-compatible result dict.
 
         whisperx.align expects ``{"segments": [...], "language": "..."}`` with
@@ -124,6 +131,13 @@ class TranscriptionPipeline:
         that shape here so the alignment step downstream is a drop-in.
         """
         lang_arg = language if language else None
+        # When auto-detecting, nudge the decoder toward Simplified Chinese.
+        # faster-whisper sometimes outputs Traditional Chinese for Mandarin
+        # audio; the initial_prompt shifts the prior without forcing it —
+        # English/Japanese/etc. audio is unaffected.
+        initial_prompt = (
+            "以下是普通话的对话，请以简体中文输出。" if lang_arg is None else None
+        )
         logger.info(
             "Starting faster-whisper transcription (language=%s)",
             lang_arg or "auto",
@@ -135,6 +149,7 @@ class TranscriptionPipeline:
             beam_size=5,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500),
+            initial_prompt=initial_prompt,
         )
         segments = [
             {
@@ -173,13 +188,56 @@ class TranscriptionPipeline:
             )
         return turns
 
-    def detect_overlaps(self, audio_path: str) -> list[tuple[float, float]]:
-        """Return (start, end) intervals where ≥2 speakers are simultaneously active."""
+    def detect_overlaps(self, audio_path: str, onset: float = None) -> dict:
+        """Return overlap intervals and statistics.
+
+        If *onset* differs from the current cached onset, the OSD pipeline
+        cache is invalidated so it is re-instantiated with the new threshold.
+        """
+        if onset is not None and onset != self._osd_onset:
+            self._osd_onset = onset
+            self._osd = None
+
         osd_result = self.osd_pipeline({"audio": audio_path})
-        return [
+        intervals = [
             (round(seg.start, 3), round(seg.end, 3))
             for seg, _, _ in osd_result.itertracks(yield_label=True)
         ]
+
+        import torchaudio as _torchaudio
+
+        info = _torchaudio.info(audio_path)
+        total_s = round(info.num_frames / info.sample_rate, 3)
+        overlap_s = round(sum(e - s for s, e in intervals), 3)
+        ratio = round(overlap_s / total_s, 4) if total_s > 0 else 0.0
+        return {
+            "intervals": intervals,
+            "total_s": total_s,
+            "overlap_s": overlap_s,
+            "ratio": ratio,
+            "count": len(intervals),
+        }
+
+    def separate_overlaps(self, audio_path: str, n_speakers: int = 2) -> list[str]:
+        """Run MossFormer2 speech separation. Returns list of separated WAV paths."""
+        if getattr(self, "_clearvoice", None) is None:
+            from clearvoice import ClearVoice
+
+            self._clearvoice = ClearVoice(
+                task="speech_separation",
+                model_names=["MossFormer2_SS_16K"],
+            )
+        from pathlib import Path
+
+        out_dir = str(Path(audio_path).parent)
+        self._clearvoice(input_path=audio_path, online_write=True, output_path=out_dir)
+        stem = Path(audio_path).stem
+        results = []
+        for i in range(1, n_speakers + 1):
+            p = Path(out_dir) / f"{stem}_MossFormer2_SS_16K_spk{i}.wav"
+            if p.exists():
+                results.append(str(p))
+        return results
 
     def extract_speaker_embeddings(
         self, audio_path: str, turns: list[dict]
@@ -265,7 +323,7 @@ class TranscriptionPipeline:
         import whisperx
 
         segments = transcription_result.get("segments", [])
-        language = transcription_result.get("language", "zh") or "zh"
+        language = transcription_result.get("language") or "zh"
         audio = whisperx.load_audio(audio_path)
 
         # --- Step 1: forced word-level alignment ---
@@ -347,10 +405,12 @@ class TranscriptionPipeline:
         self,
         audio_path: str,
         raw_audio_path: str = None,
-        language: str = "zh",
+        language: str = None,
         min_speakers: int = None,
         max_speakers: int = None,
         detect_overlap: bool = False,
+        separate_speech: bool = False,
+        osd_onset: float = 0.5,
     ) -> dict:
         """Full pipeline: transcribe → diarize → forced-align → extract embeddings.
 
@@ -381,16 +441,51 @@ class TranscriptionPipeline:
         embeddings = self.extract_speaker_embeddings(embed_path, turns)
         logger.info("Extracted embeddings for %d speakers", len(embeddings))
 
+        overlap_result = None
         if detect_overlap:
-            logger.info("Running overlap speech detection")
-            overlap_intervals = self.detect_overlaps(audio_path)
-            logger.info("OSD found %d overlap intervals", len(overlap_intervals))
+            logger.info("Running overlap speech detection (onset=%.4f)", osd_onset)
+            overlap_result = self.detect_overlaps(audio_path, onset=osd_onset)
+            logger.info(
+                "OSD found %d overlap intervals (overlap_s=%.3f, ratio=%.4f)",
+                overlap_result["count"],
+                overlap_result["overlap_s"],
+                overlap_result["ratio"],
+            )
             for seg in aligned:
                 mid = (seg["start"] + seg["end"]) / 2
-                seg["has_overlap"] = any(s <= mid <= e for s, e in overlap_intervals)
+                seg["has_overlap"] = any(
+                    s <= mid <= e for s, e in overlap_result["intervals"]
+                )
+
+        overlap_stats = None
+        if overlap_result is not None:
+            overlap_stats = {
+                "total_s": overlap_result["total_s"],
+                "overlap_s": overlap_result["overlap_s"],
+                "ratio": overlap_result["ratio"],
+                "count": overlap_result["count"],
+            }
+
+        separated_transcripts: list[dict] = []
+        if separate_speech:
+            logger.info("Running MossFormer2 speech separation on %s", audio_path)
+            separated_paths = self.separate_overlaps(audio_path)
+            logger.info("Separation done: %d tracks", len(separated_paths))
+            for i, sep_path in enumerate(separated_paths):
+                logger.info("Transcribing separated track %d: %s", i + 1, sep_path)
+                sep_result = self.transcribe(sep_path, language=language)
+                separated_transcripts.append(
+                    {
+                        "track": i + 1,
+                        "path": sep_path,
+                        "segments": sep_result["segments"],
+                    }
+                )
 
         return {
             "segments": aligned,
             "speaker_embeddings": embeddings,
             "unique_speakers": list(embeddings.keys()),
+            "overlap_stats": overlap_stats,
+            "separated_tracks": separated_transcripts,
         }

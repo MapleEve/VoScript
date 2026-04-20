@@ -1,5 +1,6 @@
 """FastAPI service for voice transcription with speaker identification."""
 
+import hashlib
 import hmac
 import json
 import os
@@ -314,6 +315,41 @@ def _convert_to_wav(input_path: Path) -> Path:
     return wav_path
 
 
+_HASH_INDEX_FILE = TRANSCRIPTIONS_DIR / "hash_index.json"
+_hash_index_lock = __import__("threading").Lock()
+
+
+def _compute_file_hash(path: Path) -> str:
+    sha256 = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+def _lookup_hash(file_hash: str) -> str | None:
+    """Return existing tr_id if hash is already transcribed and result exists."""
+    with _hash_index_lock:
+        if not _HASH_INDEX_FILE.exists():
+            return None
+        index = json.loads(_HASH_INDEX_FILE.read_text())
+    tr_id = index.get(file_hash)
+    if tr_id and (TRANSCRIPTIONS_DIR / tr_id / "result.json").exists():
+        return tr_id
+    return None
+
+
+def _register_hash(file_hash: str, tr_id: str) -> None:
+    with _hash_index_lock:
+        index = (
+            json.loads(_HASH_INDEX_FILE.read_text())
+            if _HASH_INDEX_FILE.exists()
+            else {}
+        )
+        index[file_hash] = tr_id
+        _HASH_INDEX_FILE.write_text(json.dumps(index, indent=2))
+
+
 def _run_transcription(
     job_id: str,
     audio_path: Path,
@@ -323,6 +359,9 @@ def _run_transcription(
     denoise_model: str = None,
     osd_enabled: bool = False,
     snr_threshold: float = None,
+    file_hash: str = None,
+    osd_onset: float = 0.5,
+    separate_speech: bool = False,
 ):
     """Background transcription worker."""
     try:
@@ -360,6 +399,8 @@ def _run_transcription(
                 min_speakers=min_speakers or None,
                 max_speakers=max_speakers or None,
                 detect_overlap=osd_enabled,
+                osd_onset=osd_onset,
+                separate_speech=separate_speech,
             )
 
         # Release cached CUDA memory so the next queued job has headroom
@@ -425,14 +466,18 @@ def _run_transcription(
             "speaker_map": speaker_map,
             "unique_speakers": result["unique_speakers"],
             "params": {
-                "language": language,
+                "language": language or "auto",
                 "denoise_model": effective_denoise,
                 "snr_threshold": effective_snr,
                 "voiceprint_threshold": VOICEPRINT_THRESHOLD,
                 "osd": osd_enabled,
+                "osd_onset": osd_onset,
+                "separate_speech": separate_speech,
                 "min_speakers": min_speakers,
                 "max_speakers": max_speakers,
             },
+            "overlap_stats": result.get("overlap_stats"),
+            "separated_tracks": result.get("separated_tracks", []),
         }
 
         tr_dir = TRANSCRIPTIONS_DIR / job_id
@@ -446,6 +491,9 @@ def _run_transcription(
 
         for spk_label, emb in result["speaker_embeddings"].items():
             np.save(tr_dir / f"emb_{spk_label}.npy", emb)
+
+        if file_hash:
+            _register_hash(file_hash, job_id)
 
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["result"] = tr
@@ -473,24 +521,23 @@ async def index():
 @app.post("/api/transcribe")
 async def transcribe(
     file: UploadFile = File(...),
-    language: str = Form("zh"),
+    language: str = Form(None),
     min_speakers: int = Form(0),
     max_speakers: int = Form(0),
     denoise_model: str = Form("none"),
     osd: bool = Form(False),
+    osd_onset: float = Form(0.5),
+    separate_speech: bool = Form(False),
     snr_threshold: float = Form(None),
 ):
+    # Normalise empty string to None so pipeline treats it as auto-detect.
+    language = language.strip() if language else None
+
     job_id = f"tr_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
 
-    # Strip any directory component a client may have smuggled in via the
-    # multipart filename (e.g. `../../etc/passwd`, `/tmp/evil`). We never
-    # trust the client-provided filename as a path segment.
     safe_filename = PurePosixPath(file.filename or "upload").name or "upload"
     save_path = UPLOADS_DIR / f"{job_id}_{safe_filename}"
 
-    # Streaming size-capped copy — refuse unbounded uploads that could
-    # exhaust disk. Delete the partial artifact on overflow so we don't
-    # leave a huge file behind.
     size = 0
     with open(save_path, "wb") as f:
         while True:
@@ -506,6 +553,16 @@ async def transcribe(
                     f"Upload exceeds MAX_UPLOAD_BYTES ({MAX_UPLOAD_BYTES} bytes)",
                 )
             f.write(chunk)
+
+    # Dedup: if identical audio was already transcribed, return existing result.
+    file_hash = _compute_file_hash(save_path)
+    existing_id = _lookup_hash(file_hash)
+    if existing_id:
+        save_path.unlink(missing_ok=True)
+        logger.info(
+            "Dedup hit: %s already transcribed as %s", safe_filename, existing_id
+        )
+        return {"id": existing_id, "status": "completed", "deduplicated": True}
 
     jobs[job_id] = {
         "status": "queued",
@@ -523,6 +580,9 @@ async def transcribe(
             denoise_model,
             osd,
             snr_threshold,
+            file_hash,
+            osd_onset,
+            separate_speech,
         ),
     )
     thread.start()
@@ -568,6 +628,140 @@ async def get_transcription(tr_id: str):
     if not result_file.exists():
         raise HTTPException(404, "Transcription not found")
     return json.loads(result_file.read_text(encoding="utf-8"))
+
+
+@app.post("/api/transcriptions/{tr_id}/analyze-overlap")
+async def analyze_overlap(tr_id: str, onset: float = Form(0.5)):
+    """Re-run OSD on an existing transcription without re-transcribing.
+
+    Finds the audio file in UPLOADS_DIR, calls detect_overlaps with the given
+    onset threshold, writes the updated overlap_stats back to result.json, and
+    returns the stats.
+    """
+    import glob as _glob
+
+    result_file = TRANSCRIPTIONS_DIR / tr_id / "result.json"
+    if not result_file.exists():
+        raise HTTPException(404, "Transcription not found")
+
+    # Prefer pre-converted WAV; fall back to any uploaded file then convert.
+    wav_candidates = _glob.glob(str(UPLOADS_DIR / f"{tr_id}_*.wav"))
+    if wav_candidates:
+        audio_path = Path(wav_candidates[0])
+    else:
+        any_candidates = _glob.glob(str(UPLOADS_DIR / f"{tr_id}_*"))
+        if not any_candidates:
+            raise HTTPException(
+                404,
+                "Audio file not found for this transcription. "
+                "The original upload may have been removed.",
+            )
+        audio_path = _convert_to_wav(Path(any_candidates[0]))
+
+    logger.info(
+        "analyze-overlap: tr_id=%s onset=%.4f audio=%s", tr_id, onset, audio_path
+    )
+
+    with _gpu_sem:
+        overlap_result = pipeline.detect_overlaps(str(audio_path), onset=onset)
+
+    overlap_stats = {
+        "total_s": overlap_result["total_s"],
+        "overlap_s": overlap_result["overlap_s"],
+        "ratio": overlap_result["ratio"],
+        "count": overlap_result["count"],
+        "onset": onset,
+    }
+
+    # Read-modify-write result.json
+    data = json.loads(result_file.read_text(encoding="utf-8"))
+    data["overlap_stats"] = overlap_stats
+    result_file.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    logger.info(
+        "analyze-overlap done: tr_id=%s overlap_s=%.3f ratio=%.4f count=%d",
+        tr_id,
+        overlap_stats["overlap_s"],
+        overlap_stats["ratio"],
+        overlap_stats["count"],
+    )
+    return overlap_stats
+
+
+@app.post("/api/transcriptions/{tr_id}/separate")
+async def separate_transcription(tr_id: str, n_speakers: int = Form(2)):
+    """Run MossFormer2 separation on an existing transcription's audio.
+
+    Returns separated track transcripts for comparison with original.
+    """
+    tr_dir = TRANSCRIPTIONS_DIR / tr_id
+    if not (tr_dir / "result.json").exists():
+        raise HTTPException(404, f"Transcription {tr_id} not found")
+
+    # Find WAV file
+    wav_files = list(UPLOADS_DIR.glob(f"{tr_id}_*.wav"))
+    if not wav_files:
+        # Try converting original upload
+        orig_files = list(UPLOADS_DIR.glob(f"{tr_id}_*"))
+        orig_files = [
+            f
+            for f in orig_files
+            if f.suffix.lower() in (".mp3", ".ogg", ".m4a", ".flac")
+        ]
+        if not orig_files:
+            raise HTTPException(404, f"No audio file found for {tr_id}")
+        audio_path = _convert_to_wav(orig_files[0])
+    else:
+        audio_path = wav_files[0]
+
+    logger.info(
+        "separate: tr_id=%s n_speakers=%d audio=%s", tr_id, n_speakers, audio_path
+    )
+
+    with _gpu_sem:
+        separated_paths = pipeline.separate_overlaps(
+            str(audio_path), n_speakers=n_speakers
+        )
+        # Re-transcribe each separated track
+        separated_tracks = []
+        for i, sep_path in enumerate(separated_paths):
+            result = pipeline.transcribe(sep_path, language="zh")
+            separated_tracks.append(
+                {
+                    "track": i + 1,
+                    "path": sep_path,
+                    "segments": result["segments"],
+                    "n_segments": len(result["segments"]),
+                    "text_len": sum(len(s.get("text", "")) for s in result["segments"]),
+                }
+            )
+
+    # Write back to result.json
+    result_path = tr_dir / "result.json"
+    tr = json.loads(result_path.read_text(encoding="utf-8"))
+    tr["separated_tracks"] = separated_tracks
+    tr["params"]["separate_speech"] = True
+    tr["params"]["n_speakers"] = n_speakers
+    result_path.write_text(
+        json.dumps(tr, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    logger.info("separate done: tr_id=%s n_tracks=%d", tr_id, len(separated_tracks))
+    return {
+        "tr_id": tr_id,
+        "n_tracks": len(separated_tracks),
+        "tracks": [
+            {
+                "track": t["track"],
+                "n_segments": t["n_segments"],
+                "text_len": t["text_len"],
+            }
+            for t in separated_tracks
+        ],
+        "separated_tracks": separated_tracks,
+    }
 
 
 @app.put("/api/transcriptions/{tr_id}/segments/{seg_id}/speaker")
