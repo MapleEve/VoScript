@@ -375,11 +375,8 @@ def _run_transcription(
     min_speakers: int,
     max_speakers: int,
     denoise_model: str = None,
-    osd_enabled: bool = False,
     snr_threshold: float = None,
     file_hash: str = None,
-    osd_onset: float = 0.5,
-    separate_speech: bool = False,
 ):
     """Background transcription worker."""
     try:
@@ -416,9 +413,6 @@ def _run_transcription(
                 language=language,
                 min_speakers=min_speakers or None,
                 max_speakers=max_speakers or None,
-                detect_overlap=osd_enabled,
-                osd_onset=osd_onset,
-                separate_speech=separate_speech,
             )
 
         # Release cached CUDA memory so the next queued job has headroom
@@ -460,7 +454,6 @@ def _run_transcription(
                 "speaker_id": match.get("matched_id"),
                 "speaker_name": match.get("matched_name", spk_label),
                 "similarity": match.get("similarity", 0),
-                "has_overlap": seg.get("has_overlap", False),
             }
             # Forward word-level timestamps when forced alignment produced them
             # (0.3.0+). Absent when the language has no alignment model or
@@ -488,14 +481,9 @@ def _run_transcription(
                 "denoise_model": effective_denoise,
                 "snr_threshold": effective_snr,
                 "voiceprint_threshold": VOICEPRINT_THRESHOLD,
-                "osd": osd_enabled,
-                "osd_onset": osd_onset,
-                "separate_speech": separate_speech,
                 "min_speakers": min_speakers,
                 "max_speakers": max_speakers,
             },
-            "overlap_stats": result.get("overlap_stats"),
-            "separated_tracks": result.get("separated_tracks", []),
         }
 
         tr_dir = TRANSCRIPTIONS_DIR / job_id
@@ -543,9 +531,6 @@ async def transcribe(
     min_speakers: int = Form(0),
     max_speakers: int = Form(0),
     denoise_model: str = Form("none"),
-    osd: bool = Form(False),
-    osd_onset: float = Form(0.5),
-    separate_speech: bool = Form(False),
     snr_threshold: float = Form(None),
 ):
     # Normalise empty string to None so pipeline treats it as auto-detect.
@@ -596,11 +581,8 @@ async def transcribe(
             min_speakers,
             max_speakers,
             denoise_model,
-            osd,
             snr_threshold,
             file_hash,
-            osd_onset,
-            separate_speech,
         ),
     )
     thread.start()
@@ -646,233 +628,6 @@ async def get_transcription(tr_id: str):
     if not result_file.exists():
         raise HTTPException(404, "Transcription not found")
     return json.loads(result_file.read_text(encoding="utf-8"))
-
-
-@app.post("/api/transcriptions/{tr_id}/analyze-overlap")
-async def analyze_overlap(tr_id: str, onset: float = Form(0.5)):
-    """Re-run OSD on an existing transcription without re-transcribing.
-
-    Finds the audio file in UPLOADS_DIR, calls detect_overlaps with the given
-    onset threshold, writes the updated overlap_stats back to result.json, and
-    returns the stats.
-    """
-    import glob as _glob
-
-    result_file = TRANSCRIPTIONS_DIR / tr_id / "result.json"
-    if not result_file.exists():
-        raise HTTPException(404, "Transcription not found")
-
-    # Prefer pre-converted WAV; fall back to any uploaded file then convert.
-    wav_candidates = _glob.glob(str(UPLOADS_DIR / f"{tr_id}_*.wav"))
-    if wav_candidates:
-        audio_path = Path(wav_candidates[0])
-    else:
-        any_candidates = _glob.glob(str(UPLOADS_DIR / f"{tr_id}_*"))
-        if not any_candidates:
-            raise HTTPException(
-                404,
-                "Audio file not found for this transcription. "
-                "The original upload may have been removed.",
-            )
-        audio_path = _convert_to_wav(Path(any_candidates[0]))
-
-    logger.info(
-        "analyze-overlap: tr_id=%s onset=%.4f audio=%s", tr_id, onset, audio_path
-    )
-
-    with _gpu_sem:
-        overlap_result = pipeline.detect_overlaps(str(audio_path), onset=onset)
-
-    overlap_stats = {
-        "total_s": overlap_result["total_s"],
-        "overlap_s": overlap_result["overlap_s"],
-        "ratio": overlap_result["ratio"],
-        "count": overlap_result["count"],
-        "onset": onset,
-    }
-
-    # Read-modify-write result.json — persist stats AND intervals for downstream use
-    data = json.loads(result_file.read_text(encoding="utf-8"))
-    data["overlap_stats"] = overlap_stats
-    data["overlap_intervals"] = [list(iv) for iv in overlap_result["intervals"]]
-    result_file.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    logger.info(
-        "analyze-overlap done: tr_id=%s overlap_s=%.3f ratio=%.4f count=%d",
-        tr_id,
-        overlap_stats["overlap_s"],
-        overlap_stats["ratio"],
-        overlap_stats["count"],
-    )
-    return {**overlap_stats, "intervals": data["overlap_intervals"]}
-
-
-@app.post("/api/transcriptions/{tr_id}/separate")
-async def separate_transcription(tr_id: str, n_speakers: int = Form(2)):
-    """Run MossFormer2 separation on an existing transcription's audio.
-
-    Returns separated track transcripts for comparison with original.
-    """
-    tr_dir = TRANSCRIPTIONS_DIR / tr_id
-    if not (tr_dir / "result.json").exists():
-        raise HTTPException(404, f"Transcription {tr_id} not found")
-
-    # Find WAV file
-    wav_files = list(UPLOADS_DIR.glob(f"{tr_id}_*.wav"))
-    if not wav_files:
-        # Try converting original upload
-        orig_files = list(UPLOADS_DIR.glob(f"{tr_id}_*"))
-        orig_files = [
-            f
-            for f in orig_files
-            if f.suffix.lower() in (".mp3", ".ogg", ".m4a", ".flac")
-        ]
-        if not orig_files:
-            raise HTTPException(404, f"No audio file found for {tr_id}")
-        audio_path = _convert_to_wav(orig_files[0])
-    else:
-        audio_path = wav_files[0]
-
-    logger.info(
-        "separate: tr_id=%s n_speakers=%d audio=%s", tr_id, n_speakers, audio_path
-    )
-
-    with _gpu_sem:
-        separated_paths = pipeline.separate_overlaps(
-            str(audio_path), n_speakers=n_speakers
-        )
-        # Re-transcribe each separated track
-        separated_tracks = []
-        for i, sep_path in enumerate(separated_paths):
-            result = pipeline.transcribe(sep_path, language="zh")
-            separated_tracks.append(
-                {
-                    "track": i + 1,
-                    "path": sep_path,
-                    "segments": result["segments"],
-                    "n_segments": len(result["segments"]),
-                    "text_len": sum(len(s.get("text", "")) for s in result["segments"]),
-                }
-            )
-
-    # Write back to result.json
-    result_path = tr_dir / "result.json"
-    tr = json.loads(result_path.read_text(encoding="utf-8"))
-    tr["separated_tracks"] = separated_tracks
-    tr["params"]["separate_speech"] = True
-    tr["params"]["n_speakers"] = n_speakers
-    result_path.write_text(
-        json.dumps(tr, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    logger.info("separate done: tr_id=%s n_tracks=%d", tr_id, len(separated_tracks))
-    return {
-        "tr_id": tr_id,
-        "n_tracks": len(separated_tracks),
-        "tracks": [
-            {
-                "track": t["track"],
-                "n_segments": t["n_segments"],
-                "text_len": t["text_len"],
-            }
-            for t in separated_tracks
-        ],
-        "separated_tracks": separated_tracks,
-    }
-
-
-@app.post("/api/transcriptions/{tr_id}/separate-segments")
-async def separate_segments(
-    tr_id: str,
-    onset: float = Form(0.08),
-    min_duration: float = Form(0.5),
-    language: str = Form(None),
-):
-    """Run MossFormer2 separation on individual OSD-detected overlap segments.
-
-    Unlike /separate which runs on the full file (causing dominant-speaker
-    collapse), this endpoint:
-    1. Reads or re-runs OSD to get per-interval timestamps
-    2. Extracts each overlap interval as a short WAV chunk
-    3. Runs MossFormer2 on each chunk (both speakers active → balanced energy)
-    4. Transcribes each separated track
-    5. Returns timestamped results merged into the main transcript timeline
-
-    This approach preserves full-file transcription quality while recovering
-    sidetalk content from overlap windows.
-    """
-    tr_dir = TRANSCRIPTIONS_DIR / tr_id
-    result_file = tr_dir / "result.json"
-    if not result_file.exists():
-        raise HTTPException(404, f"Transcription {tr_id} not found")
-
-    # Resolve audio path
-    wav_files = list(UPLOADS_DIR.glob(f"{tr_id}_*.wav"))
-    if not wav_files:
-        orig_files = [
-            f
-            for f in UPLOADS_DIR.glob(f"{tr_id}_*")
-            if f.suffix.lower() in (".mp3", ".ogg", ".m4a", ".flac")
-        ]
-        if not orig_files:
-            raise HTTPException(404, f"No audio file found for {tr_id}")
-        audio_path = _convert_to_wav(orig_files[0])
-    else:
-        audio_path = wav_files[0]
-
-    # Load persisted intervals or re-run OSD
-    data = json.loads(result_file.read_text(encoding="utf-8"))
-    raw_intervals = data.get("overlap_intervals")
-    if not raw_intervals:
-        logger.info(
-            "separate-segments: no cached intervals, running OSD onset=%.4f", onset
-        )
-        with _gpu_sem:
-            osd = pipeline.detect_overlaps(str(audio_path), onset=onset)
-        intervals = osd["intervals"]
-        data["overlap_stats"] = {
-            "total_s": osd["total_s"],
-            "overlap_s": osd["overlap_s"],
-            "ratio": osd["ratio"],
-            "count": osd["count"],
-            "onset": onset,
-        }
-        data["overlap_intervals"] = [list(iv) for iv in intervals]
-    else:
-        intervals = [tuple(iv) for iv in raw_intervals]
-
-    logger.info(
-        "separate-segments: tr_id=%s intervals=%d audio=%s",
-        tr_id,
-        len(intervals),
-        audio_path,
-    )
-
-    with _gpu_sem:
-        seg_results = pipeline.separate_overlap_segments(
-            str(audio_path), intervals, min_duration=min_duration, language=language
-        )
-
-    data["overlap_segments"] = seg_results
-    result_file.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    total_segs = sum(t["n_segs"] for r in seg_results for t in r.get("tracks", []))
-    logger.info(
-        "separate-segments done: tr_id=%s windows=%d total_segs=%d",
-        tr_id,
-        len(seg_results),
-        total_segs,
-    )
-    return {
-        "tr_id": tr_id,
-        "intervals_processed": len(seg_results),
-        "total_segments_recovered": total_segs,
-        "overlap_segments": seg_results,
-    }
 
 
 @app.put("/api/transcriptions/{tr_id}/segments/{seg_id}/speaker")

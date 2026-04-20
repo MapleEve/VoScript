@@ -31,9 +31,6 @@ class TranscriptionPipeline:
         self._whisper = None
         self._diarization = None
         self._embedding_model = None
-        self._osd = None
-        self._osd_onset = 0.5
-        self._clearvoice = None
 
     @property
     def whisper(self):
@@ -96,33 +93,6 @@ class TranscriptionPipeline:
             # exactly what we need for per-turn embeddings.
             self._embedding_model = Inference(model, window="whole")
         return self._embedding_model
-
-    @property
-    def osd_pipeline(self):
-        if self._osd is None:
-            from pyannote.audio import Model
-            from pyannote.audio.pipelines import OverlappedSpeechDetection
-
-            logger.info(
-                "Loading pyannote OverlappedSpeechDetection (onset=%.4f)",
-                self._osd_onset,
-            )
-            seg_model = Model.from_pretrained(
-                "pyannote/segmentation-3.0",
-                use_auth_token=self.hf_token,
-            )
-            self._osd = OverlappedSpeechDetection(segmentation=seg_model)
-            self._osd.instantiate(
-                {
-                    "min_duration_on": 0.0,
-                    "min_duration_off": 0.0,
-                }
-            )
-            self._osd.initialize()
-            _dev = self.device if ":" in self.device else "cuda:0"
-            if self.device.startswith("cuda"):
-                self._osd.to(torch.device(_dev))
-        return self._osd
 
     def transcribe(self, audio_path: str, language: str = None) -> dict:
         """Run faster-whisper and return a whisperx-compatible result dict.
@@ -188,185 +158,6 @@ class TranscriptionPipeline:
                 }
             )
         return turns
-
-    def detect_overlaps(self, audio_path: str, onset: float = None) -> dict:
-        """Return overlap intervals and statistics.
-
-        If *onset* differs from the current cached onset, the OSD pipeline
-        cache is invalidated so it is re-instantiated with the new threshold.
-        """
-        if onset is not None and onset != self._osd_onset:
-            self._osd_onset = onset
-            self._osd = None
-
-        osd_result = self.osd_pipeline({"audio": audio_path})
-        intervals = [
-            (round(seg.start, 3), round(seg.end, 3))
-            for seg, _, _ in osd_result.itertracks(yield_label=True)
-        ]
-
-        import torchaudio as _torchaudio
-
-        info = _torchaudio.info(audio_path)
-        total_s = round(info.num_frames / info.sample_rate, 3)
-        overlap_s = round(sum(e - s for s, e in intervals), 3)
-        ratio = round(overlap_s / total_s, 4) if total_s > 0 else 0.0
-        return {
-            "intervals": intervals,
-            "total_s": total_s,
-            "overlap_s": overlap_s,
-            "ratio": ratio,
-            "count": len(intervals),
-        }
-
-    def separate_overlaps(self, audio_path: str, n_speakers: int = 2) -> list[str]:
-        """Run MossFormer2 speech separation. Returns list of separated WAV paths."""
-        import torch
-        from pathlib import Path
-
-        # Determine the target CUDA device index once.
-        _device_idx = (
-            (int(self.device.split(":")[-1]) if (":" in self.device) else 0)
-            if self.device.startswith("cuda")
-            else None
-        )
-
-        if getattr(self, "_clearvoice", None) is None:
-            from clearvoice import ClearVoice
-            from clearvoice.networks import SpeechModel
-
-            # ClearVoice's SpeechModel.__init__ calls get_free_gpu() (nvidia-smi)
-            # to select the GPU with the most free memory.  nvidia-smi is a
-            # subprocess and ignores CUDA_VISIBLE_DEVICES, so on multi-GPU hosts
-            # it returns physical GPU indices.  After seg 0 consumes memory on
-            # GPU 0, subsequent calls pick GPU 1 and do set_device(1), but the
-            # already-loaded model weights are on GPU 0 → "cuda:0 vs cuda:1".
-            #
-            # Fix: monkey-patch get_free_gpu on the class to always return the
-            # target device index.  This is applied before ClearVoice() is
-            # instantiated so every SpeechModel inside it uses the pinned GPU.
-            # The patch is permanent for the process lifetime, which is safe
-            # because the rest of the pipeline already addresses self.device.
-            if _device_idx is not None:
-                _pinned = _device_idx
-                SpeechModel.get_free_gpu = lambda self: _pinned  # type: ignore[method-assign]
-                torch.cuda.set_device(_device_idx)
-                logger.info(
-                    "separate_overlaps: patched SpeechModel.get_free_gpu → %s "
-                    "to prevent multi-GPU tensor scatter in ClearVoice",
-                    _device_idx,
-                )
-
-            self._clearvoice = ClearVoice(
-                task="speech_separation",
-                model_names=["MossFormer2_SS_16K"],
-            )
-
-        # ClearVoice writes output to a MossFormer2_SS_16K subdirectory inside
-        # output_path, naming files "{stem}_s{i}.wav".
-        out_dir = str(Path(audio_path).parent)
-        stem = Path(audio_path).stem
-        cv_subdir = Path(out_dir) / "MossFormer2_SS_16K"
-
-        # Check if separated files already exist from a previous run — skip GPU
-        # inference if so to avoid redundant heavy computation.
-        preexisting = [cv_subdir / f"{stem}_s{i}.wav" for i in range(1, n_speakers + 1)]
-        if all(p.exists() for p in preexisting):
-            logger.info("separate_overlaps: reusing cached separation for %s", stem)
-            return [str(p) for p in preexisting]
-
-        self._clearvoice(input_path=audio_path, online_write=True, output_path=out_dir)
-        results = []
-        for i in range(1, n_speakers + 1):
-            p = cv_subdir / f"{stem}_s{i}.wav"
-            if p.exists():
-                results.append(str(p))
-        return results
-
-    def separate_overlap_segments(
-        self,
-        audio_path: str,
-        intervals: list[tuple[float, float]],
-        min_duration: float = 0.5,
-        language: str = None,
-    ) -> list[dict]:
-        """Run MossFormer2 on each detected overlap interval separately.
-
-        Segment-level separation avoids the dominant-speaker collapse that occurs
-        when the full file is fed to the model: within each overlap window both
-        speakers are simultaneously active so their energy is balanced.
-
-        Returns list of:
-            {start, end, tracks: [{track: 1|2, segments: [...], n_segs: int}]}
-        Only intervals longer than *min_duration* seconds are processed.
-        """
-        import tempfile
-        from pathlib import Path
-        import torchaudio as _ta
-
-        waveform, sr = _ta.load(audio_path)
-        if sr != 16000:
-            waveform = _ta.functional.resample(waveform, sr, 16000)
-            sr = 16000
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
-
-        results = []
-        with tempfile.TemporaryDirectory(prefix="vos_sep_") as tmp:
-            tmp_path = Path(tmp)
-            for idx, (start, end) in enumerate(intervals):
-                dur = end - start
-                if dur < min_duration:
-                    continue
-
-                start_f = int(start * sr)
-                end_f = int(end * sr)
-                chunk = waveform[:, start_f:end_f]
-                if chunk.shape[1] < int(min_duration * sr):
-                    continue
-
-                chunk_path = str(tmp_path / f"seg_{idx:04d}.wav")
-                _ta.save(chunk_path, chunk, sr)
-
-                try:
-                    sep_paths = self.separate_overlaps(chunk_path, n_speakers=2)
-                except Exception as exc:
-                    logger.warning(
-                        "separate_overlaps failed for seg %d: %s",
-                        idx,
-                        exc,
-                        exc_info=True,
-                    )
-                    continue
-
-                tracks = []
-                for i, sp in enumerate(sep_paths, start=1):
-                    sp_wave, sp_sr = _ta.load(sp)
-                    rms = float(sp_wave.pow(2).mean().sqrt())
-                    if rms < 1e-4:
-                        tracks.append({"track": i, "segments": [], "n_segs": 0})
-                        continue
-                    tr = self.transcribe(sp, language=language)
-                    tracks.append(
-                        {
-                            "track": i,
-                            "segments": tr["segments"],
-                            "n_segs": len(tr["segments"]),
-                        }
-                    )
-
-                results.append(
-                    {"start": round(start, 3), "end": round(end, 3), "tracks": tracks}
-                )
-                logger.info(
-                    "separate_overlap_segments: seg %d [%.2f-%.2f] → %d tracks",
-                    idx,
-                    start,
-                    end,
-                    len(tracks),
-                )
-
-        return results
 
     def extract_speaker_embeddings(
         self, audio_path: str, turns: list[dict]
@@ -537,9 +328,6 @@ class TranscriptionPipeline:
         language: str = None,
         min_speakers: int = None,
         max_speakers: int = None,
-        detect_overlap: bool = False,
-        separate_speech: bool = False,
-        osd_onset: float = 0.5,
     ) -> dict:
         """Full pipeline: transcribe → diarize → forced-align → extract embeddings.
 
@@ -570,51 +358,8 @@ class TranscriptionPipeline:
         embeddings = self.extract_speaker_embeddings(embed_path, turns)
         logger.info("Extracted embeddings for %d speakers", len(embeddings))
 
-        overlap_result = None
-        if detect_overlap:
-            logger.info("Running overlap speech detection (onset=%.4f)", osd_onset)
-            overlap_result = self.detect_overlaps(audio_path, onset=osd_onset)
-            logger.info(
-                "OSD found %d overlap intervals (overlap_s=%.3f, ratio=%.4f)",
-                overlap_result["count"],
-                overlap_result["overlap_s"],
-                overlap_result["ratio"],
-            )
-            for seg in aligned:
-                mid = (seg["start"] + seg["end"]) / 2
-                seg["has_overlap"] = any(
-                    s <= mid <= e for s, e in overlap_result["intervals"]
-                )
-
-        overlap_stats = None
-        if overlap_result is not None:
-            overlap_stats = {
-                "total_s": overlap_result["total_s"],
-                "overlap_s": overlap_result["overlap_s"],
-                "ratio": overlap_result["ratio"],
-                "count": overlap_result["count"],
-            }
-
-        separated_transcripts: list[dict] = []
-        if separate_speech:
-            logger.info("Running MossFormer2 speech separation on %s", audio_path)
-            separated_paths = self.separate_overlaps(audio_path)
-            logger.info("Separation done: %d tracks", len(separated_paths))
-            for i, sep_path in enumerate(separated_paths):
-                logger.info("Transcribing separated track %d: %s", i + 1, sep_path)
-                sep_result = self.transcribe(sep_path, language=language)
-                separated_transcripts.append(
-                    {
-                        "track": i + 1,
-                        "path": sep_path,
-                        "segments": sep_result["segments"],
-                    }
-                )
-
         return {
             "segments": aligned,
             "speaker_embeddings": embeddings,
             "unique_speakers": list(embeddings.keys()),
-            "overlap_stats": overlap_stats,
-            "separated_tracks": separated_transcripts,
         }
