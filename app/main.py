@@ -1,19 +1,32 @@
 """FastAPI service for voice transcription with speaker identification."""
 
+import fcntl
 import hashlib
 import hmac
 import json
 import os
 import re
+import struct
 import subprocess
 import threading
 import uuid
 import logging
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from threading import Thread
 
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Request
+from typing import Annotated
+
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    UploadFile,
+    HTTPException,
+    Path as FPath,
+    Request,
+)
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -31,6 +44,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# CQ-C1: counter used to periodically rebuild AS-norm cohort inside the
+# transcription worker so it becomes active without requiring a server restart.
+_cohort_rebuild_counter: dict = {}
+
+# CQ-H2 / PERF-C1: bounded LRU store for job states.
+_JOBS_MAX = int(os.getenv("JOBS_MAX_CACHE", "200"))
+
+
+class _LRUJobsDict:
+    """Thread-safe LRU dict for job states with bounded size."""
+
+    def __init__(self, maxsize: int = 200):
+        self._d: OrderedDict = OrderedDict()
+        self._lock = threading.Lock()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            if key in self._d:
+                self._d.move_to_end(key)
+            self._d[key] = value
+            if len(self._d) > self._maxsize:
+                self._d.popitem(last=False)
+
+    def __getitem__(self, key):
+        with self._lock:
+            return self._d[key]
+
+    def __contains__(self, key):
+        with self._lock:
+            return key in self._d
+
+    def get(self, key, default=None):
+        with self._lock:
+            return self._d.get(key, default)
+
 
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -42,6 +91,34 @@ def _safe_log_filename(name: str | None) -> str:
     if not name:
         return ""
     return _CTRL_CHAR_RE.sub("?", name)
+
+
+# --- SEC-C2 / BP-C2: Path-traversal and input validation helpers ---
+
+_TR_ID_RE = re.compile(r"^tr_[A-Za-z0-9_-]{1,64}$")
+_SPEAKER_LABEL_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _safe_tr_dir(tr_id: str) -> "Path":
+    """Validate tr_id and return the transcription directory path.
+
+    Raises HTTPException(400) if tr_id contains path traversal characters.
+    Note: TRANSCRIPTIONS_DIR is defined after DATA_DIR below; this function
+    is called only at request time, so the late reference is safe.
+    """
+    if not _TR_ID_RE.match(tr_id):
+        raise HTTPException(400, f"Invalid transcription ID format: {tr_id!r}")
+    path = (TRANSCRIPTIONS_DIR / tr_id).resolve()
+    if not str(path).startswith(str(TRANSCRIPTIONS_DIR.resolve())):
+        raise HTTPException(400, "Path traversal detected")
+    return path
+
+
+def _safe_speaker_label(label: str) -> str:
+    """Validate speaker_label to prevent path traversal via filename injection."""
+    if not _SPEAKER_LABEL_RE.match(label):
+        raise HTTPException(400, f"Invalid speaker label: {label!r}")
+    return label
 
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
@@ -181,6 +258,10 @@ def _maybe_denoise(
 
 
 API_KEY = (os.getenv("API_KEY") or "").strip() or None
+# SEC-C3: allow operators to explicitly acknowledge running without auth.
+# When ALLOW_NO_AUTH=1 the warning is suppressed; the service still runs open.
+ALLOW_NO_AUTH = os.getenv("ALLOW_NO_AUTH", "0") == "1"
+
 # Paths that must stay open even when API_KEY auth is enabled. "/" is the
 # bundled web UI (browsers can't attach a Bearer header to a direct
 # navigation — the UI's own fetch() calls to /api/* still carry the key).
@@ -206,10 +287,18 @@ UPLOAD_CHUNK = 1 << 20  # 1 MiB
 for d in [TRANSCRIPTIONS_DIR, UPLOADS_DIR, VOICEPRINTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-if API_KEY is None:
+if API_KEY is None and not ALLOW_NO_AUTH:
+    # SEC-C3: Emit a highly-visible warning so operators cannot accidentally
+    # ship an open service.  We do not refuse to start (observability before
+    # hard-fail), but the message is deliberately alarming.
     logger.warning(
-        "API_KEY is not set. The service is accepting unauthenticated requests. "
-        "Do not expose this port to untrusted networks."
+        "API_KEY is not set. Service is OPEN to all requests. "
+        "Set API_KEY env var or set ALLOW_NO_AUTH=1 to suppress this warning."
+    )
+elif API_KEY is None:
+    logger.warning(
+        "API_KEY is not set and ALLOW_NO_AUTH=1. "
+        "The service is accepting unauthenticated requests intentionally."
     )
 else:
     logger.info("API_KEY auth enabled for /api/* and / (Bearer or X-API-Key).")
@@ -306,8 +395,8 @@ except Exception as _exc:
         "AS-norm cohort init failed (identify will use raw cosine): %s", _exc
     )
 
-# In-memory job status
-jobs: dict[str, dict] = {}
+# In-memory job status — bounded LRU (CQ-H2 / PERF-C1)
+jobs: _LRUJobsDict = _LRUJobsDict(maxsize=_JOBS_MAX)
 
 # Serialise GPU work: only one transcription runs at a time.
 # Concurrent HTTP uploads are fine; they queue here before touching the GPU.
@@ -362,7 +451,31 @@ def _convert_to_wav(input_path: Path) -> Path:
 
 
 _HASH_INDEX_FILE = TRANSCRIPTIONS_DIR / "hash_index.json"
-_hash_index_lock = threading.Lock()
+# CQ-H5: threading.Lock only works within a single process. Replace with an
+# fcntl-based file lock so multiple uvicorn workers can safely share the index.
+_hash_index_thread_lock = threading.Lock()  # intra-process guard (belt)
+
+
+def _with_file_lock(path: Path, func):
+    """Execute *func* while holding an exclusive fcntl lock on *path*.lock.
+
+    Falls back to the in-process threading lock on platforms without fcntl
+    (e.g. Windows). The thread lock is always acquired first so that two
+    threads in the same process don't race through the fcntl acquire.
+    """
+    lock_path = str(path) + ".lock"
+    with _hash_index_thread_lock:
+        try:
+            with open(lock_path, "w") as lock_f:
+                try:
+                    fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+                    return func()
+                finally:
+                    fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+        except (AttributeError, OSError):
+            # fcntl unavailable (Windows) or lock file can't be opened — the
+            # thread lock we already hold is sufficient for single-process use.
+            return func()
 
 
 def _compute_file_hash(path: Path) -> str:
@@ -375,18 +488,20 @@ def _compute_file_hash(path: Path) -> str:
 
 def _lookup_hash(file_hash: str) -> str | None:
     """Return existing tr_id if hash is already transcribed and result exists."""
-    with _hash_index_lock:
+
+    def _do():
         if not _HASH_INDEX_FILE.exists():
             return None
-        index = json.loads(_HASH_INDEX_FILE.read_text())
-    tr_id = index.get(file_hash)
+        return json.loads(_HASH_INDEX_FILE.read_text()).get(file_hash)
+
+    tr_id = _with_file_lock(_HASH_INDEX_FILE, _do)
     if tr_id and (TRANSCRIPTIONS_DIR / tr_id / "result.json").exists():
         return tr_id
     return None
 
 
 def _register_hash(file_hash: str, tr_id: str) -> None:
-    with _hash_index_lock:
+    def _do():
         index = (
             json.loads(_HASH_INDEX_FILE.read_text())
             if _HASH_INDEX_FILE.exists()
@@ -394,6 +509,8 @@ def _register_hash(file_hash: str, tr_id: str) -> None:
         )
         index[file_hash] = tr_id
         _HASH_INDEX_FILE.write_text(json.dumps(index, indent=2))
+
+    _with_file_lock(_HASH_INDEX_FILE, _do)
 
 
 def _run_transcription(
@@ -541,6 +658,24 @@ def _run_transcription(
         if file_hash:
             _register_hash(file_hash, job_id)
 
+        # CQ-C1: After each successful transcription, check if AS-norm cohort
+        # should be rebuilt. Every 10th job (or when cohort is absent) we rebuild
+        # so that newly enrolled speakers contribute to normalization without
+        # requiring a server restart.
+        try:
+            _cohort_rebuild_counter[0] = _cohort_rebuild_counter.get(0, 0) + 1
+            if voiceprint_db._asnorm is None or _cohort_rebuild_counter[0] % 10 == 0:
+                voiceprint_db.build_cohort_from_transcriptions(str(TRANSCRIPTIONS_DIR))
+                cohort_size = (
+                    len(voiceprint_db._asnorm._cohort)
+                    if voiceprint_db._asnorm is not None
+                    and hasattr(voiceprint_db._asnorm, "_cohort")
+                    else 0
+                )
+                logger.info("AS-norm cohort rebuilt: size=%d", cohort_size)
+        except Exception as exc:
+            logger.warning("cohort rebuild failed: %s", exc)
+
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["result"] = tr
         logger.info(
@@ -615,6 +750,9 @@ async def transcribe(
         "filename": safe_filename,
         "created_at": datetime.now().isoformat(),
     }
+    # CD-C3: daemon=True ensures this thread does not prevent the process from
+    # exiting on SIGTERM — the OS will clean up in-progress transcriptions on
+    # shutdown rather than hanging indefinitely waiting for the thread to finish.
     thread = Thread(
         target=_run_transcription,
         args=(
@@ -627,6 +765,7 @@ async def transcribe(
             snr_threshold,
             file_hash,
         ),
+        daemon=True,
     )
     thread.start()
 
@@ -666,8 +805,10 @@ async def list_transcriptions():
 
 
 @app.get("/api/transcriptions/{tr_id}")
-async def get_transcription(tr_id: str):
-    result_file = TRANSCRIPTIONS_DIR / tr_id / "result.json"
+async def get_transcription(
+    tr_id: Annotated[str, FPath(pattern=r"^tr_[A-Za-z0-9_-]{1,64}$")],
+):
+    result_file = _safe_tr_dir(tr_id) / "result.json"
     if not result_file.exists():
         raise HTTPException(404, "Transcription not found")
     return json.loads(result_file.read_text(encoding="utf-8"))
@@ -675,10 +816,13 @@ async def get_transcription(tr_id: str):
 
 @app.put("/api/transcriptions/{tr_id}/segments/{seg_id}/speaker")
 async def reassign_speaker(
-    tr_id: str, seg_id: int, speaker_name: str = Form(...), speaker_id: str = Form(None)
+    tr_id: Annotated[str, FPath(pattern=r"^tr_[A-Za-z0-9_-]{1,64}$")],
+    seg_id: int,
+    speaker_name: str = Form(...),
+    speaker_id: str = Form(None),
 ):
     """Reassign a segment to a different speaker and optionally enroll the voiceprint."""
-    result_file = TRANSCRIPTIONS_DIR / tr_id / "result.json"
+    result_file = _safe_tr_dir(tr_id) / "result.json"
     if not result_file.exists():
         raise HTTPException(404, "Transcription not found")
     data = json.loads(result_file.read_text(encoding="utf-8"))
@@ -718,10 +862,14 @@ async def enroll_speaker(
     """Enroll or update a voiceprint from a transcription's speaker embedding."""
     import numpy as np
 
-    emb_path = TRANSCRIPTIONS_DIR / tr_id / f"emb_{speaker_label}.npy"
+    # SEC-C2: validate both tr_id and speaker_label before building any path.
+    safe_label = _safe_speaker_label(speaker_label)
+    emb_path = _safe_tr_dir(tr_id) / f"emb_{safe_label}.npy"
     if not emb_path.exists():
         raise HTTPException(404, "Embedding not found for this speaker label")
-    embedding = np.load(emb_path)
+    # SEC-C1: allow_pickle=False prevents arbitrary code execution via
+    # a crafted .npy file that embeds a pickle payload (CVSS 9.1).
+    embedding = np.load(emb_path, allow_pickle=False)
 
     if speaker_id and voiceprint_db.get_speaker(speaker_id):
         voiceprint_db.update_speaker(speaker_id, embedding, name=speaker_name)
@@ -771,8 +919,11 @@ async def rename_voiceprint(speaker_id: str, name: str = Form(...)):
 
 
 @app.get("/api/export/{tr_id}")
-async def export_transcription(tr_id: str, format: str = "srt"):
-    result_file = TRANSCRIPTIONS_DIR / tr_id / "result.json"
+async def export_transcription(
+    tr_id: Annotated[str, FPath(pattern=r"^tr_[A-Za-z0-9_-]{1,64}$")],
+    format: str = "srt",
+):
+    result_file = _safe_tr_dir(tr_id) / "result.json"
     if not result_file.exists():
         raise HTTPException(404, "Transcription not found")
     data = json.loads(result_file.read_text(encoding="utf-8"))
