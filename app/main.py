@@ -1,41 +1,28 @@
 """FastAPI service for voice transcription with speaker identification."""
 
-import fcntl
-import hashlib
 import hmac
-import json
-import os
-import re
-import struct
-import subprocess
-import threading
-import uuid
 import logging
-from collections import OrderedDict
-from datetime import datetime
-from pathlib import Path, PurePosixPath
-from threading import Thread
+from contextlib import asynccontextmanager
 
-from typing import Annotated
-
-from fastapi import (
-    FastAPI,
-    File,
-    Form,
-    UploadFile,
-    HTTPException,
-    Path as FPath,
-    Request,
-)
-from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
-    JSONResponse,
-    PlainTextResponse,
-)
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from api.routers import health, transcriptions, voiceprints
+from config import (
+    ALLOW_NO_AUTH,
+    API_KEY,
+    CORS_ORIGINS,
+    HF_TOKEN,
+    PUBLIC_EXACT_PATHS,
+    PUBLIC_PATH_PREFIXES,
+    TRANSCRIPTIONS_DIR,
+    UPLOADS_DIR,
+    VOICEPRINTS_DIR,
+    WHISPER_MODEL,
+    DEVICE,
+)
 from pipeline import TranscriptionPipeline
 from voiceprint_db import VoiceprintDB
 
@@ -44,269 +31,65 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# CQ-C1: counter used to periodically rebuild AS-norm cohort inside the
-# transcription worker so it becomes active without requiring a server restart.
-_cohort_rebuild_counter: dict = {}
 
-# CQ-H2 / PERF-C1: bounded LRU store for job states.
-_JOBS_MAX = int(os.getenv("JOBS_MAX_CACHE", "200"))
+# ---------------------------------------------------------------------------
+# Lifespan: startup / teardown
+# ---------------------------------------------------------------------------
 
 
-class _LRUJobsDict:
-    """Thread-safe LRU dict for job states with bounded size."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Ensure data directories exist
+    for d in [TRANSCRIPTIONS_DIR, UPLOADS_DIR, VOICEPRINTS_DIR]:
+        d.mkdir(parents=True, exist_ok=True)
 
-    def __init__(self, maxsize: int = 200):
-        self._d: OrderedDict = OrderedDict()
-        self._lock = threading.Lock()
-        self._maxsize = maxsize
-
-    def __setitem__(self, key, value):
-        with self._lock:
-            if key in self._d:
-                self._d.move_to_end(key)
-            self._d[key] = value
-            if len(self._d) > self._maxsize:
-                self._d.popitem(last=False)
-
-    def __getitem__(self, key):
-        with self._lock:
-            return self._d[key]
-
-    def __contains__(self, key):
-        with self._lock:
-            return key in self._d
-
-    def get(self, key, default=None):
-        with self._lock:
-            return self._d.get(key, default)
-
-
-_CTRL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
-
-
-def _safe_log_filename(name: str | None) -> str:
-    """Strip control chars (incl. CR/LF, ANSI escapes) from user-supplied names
-    before writing them to logs, so attackers can't inject fake log lines.
-    """
-    if not name:
-        return ""
-    return _CTRL_CHAR_RE.sub("?", name)
-
-
-# --- SEC-C2 / BP-C2: Path-traversal and input validation helpers ---
-
-_TR_ID_RE = re.compile(r"^tr_[A-Za-z0-9_-]{1,64}$")
-_SPEAKER_LABEL_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-
-
-def _safe_tr_dir(tr_id: str) -> "Path":
-    """Validate tr_id and return the transcription directory path.
-
-    Raises HTTPException(400) if tr_id contains path traversal characters.
-    Note: TRANSCRIPTIONS_DIR is defined after DATA_DIR below; this function
-    is called only at request time, so the late reference is safe.
-    """
-    if not _TR_ID_RE.match(tr_id):
-        raise HTTPException(400, f"Invalid transcription ID format: {tr_id!r}")
-    path = (TRANSCRIPTIONS_DIR / tr_id).resolve()
-    if not str(path).startswith(str(TRANSCRIPTIONS_DIR.resolve())):
-        raise HTTPException(400, "Path traversal detected")
-    return path
-
-
-def _safe_speaker_label(label: str) -> str:
-    """Validate speaker_label to prevent path traversal via filename injection."""
-    if not _SPEAKER_LABEL_RE.match(label):
-        raise HTTPException(400, f"Invalid speaker label: {label!r}")
-    return label
-
-
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
-TRANSCRIPTIONS_DIR = DATA_DIR / "transcriptions"
-UPLOADS_DIR = DATA_DIR / "uploads"
-VOICEPRINTS_DIR = DATA_DIR / "voiceprints"
-
-
-# Base cosine-similarity threshold for voiceprint identify(). The actual
-# threshold per candidate is adaptive — see voiceprint_db.identify's docstring
-# for the per-speaker relaxation rules.
-def _env_float(name: str, default: float) -> float:
+    # Initialise voiceprint DB and AS-norm cohort
+    db = VoiceprintDB(str(VOICEPRINTS_DIR))
     try:
-        return float(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
-VOICEPRINT_THRESHOLD = _env_float("VOICEPRINT_THRESHOLD", 0.75)
-
-DENOISE_MODEL = os.getenv("DENOISE_MODEL", "none").strip().lower()
-
-# SNR threshold (dB) below which DeepFilterNet is applied.
-# Audio estimated at or above this level is considered clean and skipped,
-# matching the A/B finding that DF hurts high-quality recordings (e.g. PLAUD Pin).
-DENOISE_SNR_THRESHOLD = _env_float("DENOISE_SNR_THRESHOLD", 10.0)
-
-# Lazy module-level handle so DeepFilterNet loads once at first use.
-_df_model = None
-_df_state = None
-
-
-def _load_deepfilternet():
-    global _df_model, _df_state
-    if _df_model is None:
-        import df as _df_pkg
-
-        _df_model, _df_state, _ = _df_pkg.init_df()
-        logger.info("DeepFilterNet model loaded")
-    return _df_model, _df_state
-
-
-def _estimate_snr(wav_path: Path) -> float:
-    """Estimate signal-to-noise ratio (dB) using a simple energy-based heuristic.
-
-    Strategy: divide the audio into short frames, compute per-frame RMS energy,
-    then treat the bottom 20 % of frame energies as the noise floor and the top
-    80 % as the speech signal.  SNR = 10 * log10(speech_power / noise_power).
-
-    This is intentionally lightweight — no VAD model, no STFT — so it adds
-    negligible latency before deciding whether to invoke DeepFilterNet.
-    """
-    import math
-    import torchaudio
-
-    waveform, sr = torchaudio.load(str(wav_path))
-    # Flatten to mono
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-    waveform = waveform.squeeze(0)  # shape: (num_samples,)
-
-    # 30 ms frames
-    frame_len = max(1, int(sr * 0.03))
-    num_frames = len(waveform) // frame_len
-    if num_frames < 5:
-        # Too short to estimate reliably — assume clean
-        return float("inf")
-
-    frames = waveform[: num_frames * frame_len].reshape(num_frames, frame_len)
-    frame_rms = frames.pow(2).mean(dim=1).sqrt()  # shape: (num_frames,)
-
-    sorted_rms, _ = frame_rms.sort()
-    noise_cutoff = max(1, int(num_frames * 0.20))
-    noise_rms = sorted_rms[:noise_cutoff].mean().item()
-    speech_rms = sorted_rms[noise_cutoff:].mean().item()
-
-    if noise_rms < 1e-9:
-        return float("inf")  # Silent noise floor — effectively infinite SNR
-
-    snr_db = 10.0 * math.log10((speech_rms / noise_rms) ** 2)
-    return snr_db
-
-
-def _maybe_denoise(
-    wav_path: Path, model: str = None, snr_threshold: float = None
-) -> Path:
-    """Return denoised WAV path if DENOISE_MODEL is set; otherwise return wav_path unchanged."""
-    effective_model = (model or DENOISE_MODEL).strip().lower()
-    if effective_model == "none":
-        return wav_path
-
-    threshold = snr_threshold if snr_threshold is not None else DENOISE_SNR_THRESHOLD
-    out_path = wav_path.with_suffix(".denoised.wav")
-
-    if effective_model == "deepfilternet":
-        import torch, torchaudio
-
-        snr_db = _estimate_snr(wav_path)
-        if snr_db >= threshold:
-            logger.info("DeepFilterNet skipped (SNR=%.1fdB, clean audio)", snr_db)
-            return wav_path
-
-        logger.info(
-            "DeepFilterNet applying (SNR=%.1fdB < %.1fdB threshold)",
-            snr_db,
-            threshold,
+        _cohort_path = TRANSCRIPTIONS_DIR / "asnorm_cohort.npy"
+        if _cohort_path.exists():
+            db.load_cohort(str(_cohort_path))
+            logger.info("AS-norm cohort loaded from %s", _cohort_path)
+        else:
+            _n = db.build_cohort_from_transcriptions(
+                str(TRANSCRIPTIONS_DIR), save_path=str(_cohort_path)
+            )
+            logger.info("AS-norm cohort built: %d embeddings", _n)
+    except Exception as exc:
+        logger.warning(
+            "AS-norm cohort init failed (identify will use raw cosine): %s", exc
         )
-        model, df_state = _load_deepfilternet()
-        import df as _df_pkg
+    app.state.db = db
 
-        audio, sr = torchaudio.load(str(wav_path))
-        if sr != df_state.sr():
-            audio = torchaudio.functional.resample(audio, sr, df_state.sr())
-        audio = audio.contiguous()
-        with torch.backends.cudnn.flags(enabled=False):
-            enhanced = _df_pkg.enhance(model, df_state, audio)
-        torchaudio.save(
-            str(out_path),
-            enhanced.unsqueeze(0) if enhanced.dim() == 1 else enhanced,
-            df_state.sr(),
+    # Initialise transcription pipeline
+    app.state.pipeline = TranscriptionPipeline(WHISPER_MODEL, HF_TOKEN, DEVICE)
+
+    # Auth mode warning
+    if API_KEY is None and not ALLOW_NO_AUTH:
+        logger.warning(
+            "API_KEY is not set. Service is OPEN to all requests. "
+            "Set API_KEY env var or set ALLOW_NO_AUTH=1 to suppress this warning."
         )
-        logger.info("DeepFilterNet: denoised %s → %s", wav_path.name, out_path.name)
-
-    elif effective_model == "noisereduce":
-        import numpy as np, soundfile as sf, noisereduce as nr
-
-        data, sr = sf.read(str(wav_path), dtype="float32")
-        reduced = nr.reduce_noise(y=data, sr=sr, stationary=True)
-        sf.write(str(out_path), reduced, sr)
-        logger.info("noisereduce: denoised %s → %s", wav_path.name, out_path.name)
-
+    elif API_KEY is None:
+        logger.warning(
+            "API_KEY is not set and ALLOW_NO_AUTH=1. "
+            "The service is accepting unauthenticated requests intentionally."
+        )
     else:
-        logger.warning("Unknown DENOISE_MODEL=%r — skipping denoising", effective_model)
-        return wav_path
+        logger.info("API_KEY auth enabled for /api/* and / (Bearer or X-API-Key).")
 
-    return out_path
+    yield
+    # No teardown required; daemon threads finish on process exit.
 
 
-API_KEY = (os.getenv("API_KEY") or "").strip() or None
-# SEC-C3: allow operators to explicitly acknowledge running without auth.
-# When ALLOW_NO_AUTH=1 the warning is suppressed; the service still runs open.
-ALLOW_NO_AUTH = os.getenv("ALLOW_NO_AUTH", "0") == "1"
+# ---------------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------------
 
-# Paths that must stay open even when API_KEY auth is enabled. "/" is the
-# bundled web UI (browsers can't attach a Bearer header to a direct
-# navigation — the UI's own fetch() calls to /api/* still carry the key).
-# /static/* serves the UI's assets. /healthz is a liveness probe. /docs
-# /redoc /openapi.json are FastAPI's auto docs.
-# We match exact strings for everything except /static/ to avoid a
-# startswith("/docs") bypass like /docsXYZ.
-PUBLIC_EXACT_PATHS = {
-    "/",
-    "/healthz",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
-}
-PUBLIC_PATH_PREFIXES = ("/static/",)
+app = FastAPI(title="Voice Transcribe", version="1.0.0", lifespan=lifespan)
 
-# Cap how much any single upload can occupy on disk. Whisper + pyannote
-# comfortably handle 2 GB of audio (~20 h @ typical bitrates); anything
-# beyond that is either a mistake or an attempt to exhaust storage.
-MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
-UPLOAD_CHUNK = 1 << 20  # 1 MiB
-
-for d in [TRANSCRIPTIONS_DIR, UPLOADS_DIR, VOICEPRINTS_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
-
-if API_KEY is None and not ALLOW_NO_AUTH:
-    # SEC-C3: Emit a highly-visible warning so operators cannot accidentally
-    # ship an open service.  We do not refuse to start (observability before
-    # hard-fail), but the message is deliberately alarming.
-    logger.warning(
-        "API_KEY is not set. Service is OPEN to all requests. "
-        "Set API_KEY env var or set ALLOW_NO_AUTH=1 to suppress this warning."
-    )
-elif API_KEY is None:
-    logger.warning(
-        "API_KEY is not set and ALLOW_NO_AUTH=1. "
-        "The service is accepting unauthenticated requests intentionally."
-    )
-else:
-    logger.info("API_KEY auth enabled for /api/* and / (Bearer or X-API-Key).")
-
-app = FastAPI(title="Voice Transcribe", version="1.0.0")
-
-_cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
-_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] or ["*"]
+# CORS
+_cors_origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -369,613 +152,10 @@ async def require_api_key(request: Request, call_next):
     return await call_next(request)
 
 
-@app.get("/healthz")
-async def healthz():
-    return {"ok": True}
-
-
-pipeline = TranscriptionPipeline()
-voiceprint_db = VoiceprintDB(str(VOICEPRINTS_DIR))
-
-# Auto-build or load AS-norm cohort from existing transcriptions. This lets
-# identify() use normalized scores instead of raw cosine against speaker-
-# dependent baselines. Failure is non-fatal — we fall back to raw cosine.
-try:
-    _cohort_path = TRANSCRIPTIONS_DIR / "asnorm_cohort.npy"
-    if _cohort_path.exists():
-        voiceprint_db.load_cohort(str(_cohort_path))
-        logger.info("AS-norm cohort loaded from %s", _cohort_path)
-    else:
-        _n = voiceprint_db.build_cohort_from_transcriptions(
-            str(TRANSCRIPTIONS_DIR), save_path=str(_cohort_path)
-        )
-        logger.info("AS-norm cohort built: %d embeddings", _n)
-except Exception as _exc:
-    logger.warning(
-        "AS-norm cohort init failed (identify will use raw cosine): %s", _exc
-    )
-
-# In-memory job status — bounded LRU (CQ-H2 / PERF-C1)
-jobs: _LRUJobsDict = _LRUJobsDict(maxsize=_JOBS_MAX)
-
-# Serialise GPU work: only one transcription runs at a time.
-# Concurrent HTTP uploads are fine; they queue here before touching the GPU.
-_gpu_sem = threading.Semaphore(1)
-
-
-def _convert_to_wav(input_path: Path) -> Path:
-    """Convert any audio format to 16 kHz mono WAV via ffmpeg.
-
-    We shell out to ffmpeg directly instead of using pydub because pydub's
-    mediainfo_json() raises KeyError('codec_type') on newer ffmpeg output
-    for some Opus/container combinations (see jiaaro/pydub#638). ffmpeg
-    itself handles every format faster-whisper / pyannote ingest, so this
-    is the simpler and more robust path.
-    """
-    wav_path = input_path.with_suffix(".wav")
-    if input_path.suffix.lower() == ".wav":
-        return input_path
-    # "--" closes ffmpeg's option parsing so a filename like `-foo.mp4`
-    # can't be interpreted as a flag. Defense in depth — the upload path
-    # already strips client-side directory components and prefixes the
-    # job_id, so input_path always starts with /data/uploads/tr_...
-    ffmpeg_timeout = int(os.getenv("FFMPEG_TIMEOUT_SEC", "1800"))
-    try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-v",
-                "error",
-                "-i",
-                str(input_path),
-                "-ar",
-                "16000",
-                "-ac",
-                "1",
-                "-f",
-                "wav",
-                "--",
-                str(wav_path),
-            ],
-            check=True,
-            timeout=ffmpeg_timeout,
-        )
-    except subprocess.TimeoutExpired:
-        wav_path.unlink(missing_ok=True)
-        logger.error(
-            "ffmpeg timed out after %ds on %s", ffmpeg_timeout, input_path.name
-        )
-        raise HTTPException(504, f"ffmpeg timed out after {ffmpeg_timeout}s")
-    return wav_path
-
-
-_HASH_INDEX_FILE = TRANSCRIPTIONS_DIR / "hash_index.json"
-# CQ-H5: threading.Lock only works within a single process. Replace with an
-# fcntl-based file lock so multiple uvicorn workers can safely share the index.
-_hash_index_thread_lock = threading.Lock()  # intra-process guard (belt)
-
-
-def _with_file_lock(path: Path, func):
-    """Execute *func* while holding an exclusive fcntl lock on *path*.lock.
-
-    Falls back to the in-process threading lock on platforms without fcntl
-    (e.g. Windows). The thread lock is always acquired first so that two
-    threads in the same process don't race through the fcntl acquire.
-    """
-    lock_path = str(path) + ".lock"
-    with _hash_index_thread_lock:
-        try:
-            with open(lock_path, "w") as lock_f:
-                try:
-                    fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
-                    return func()
-                finally:
-                    fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
-        except (AttributeError, OSError):
-            # fcntl unavailable (Windows) or lock file can't be opened — the
-            # thread lock we already hold is sufficient for single-process use.
-            return func()
-
-
-def _compute_file_hash(path: Path) -> str:
-    sha256 = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(1 << 20):
-            sha256.update(chunk)
-    return sha256.hexdigest()
-
-
-def _lookup_hash(file_hash: str) -> str | None:
-    """Return existing tr_id if hash is already transcribed and result exists."""
-
-    def _do():
-        if not _HASH_INDEX_FILE.exists():
-            return None
-        return json.loads(_HASH_INDEX_FILE.read_text()).get(file_hash)
-
-    tr_id = _with_file_lock(_HASH_INDEX_FILE, _do)
-    if tr_id and (TRANSCRIPTIONS_DIR / tr_id / "result.json").exists():
-        return tr_id
-    return None
-
-
-def _register_hash(file_hash: str, tr_id: str) -> None:
-    def _do():
-        index = (
-            json.loads(_HASH_INDEX_FILE.read_text())
-            if _HASH_INDEX_FILE.exists()
-            else {}
-        )
-        index[file_hash] = tr_id
-        _HASH_INDEX_FILE.write_text(json.dumps(index, indent=2))
-
-    _with_file_lock(_HASH_INDEX_FILE, _do)
-
-
-def _run_transcription(
-    job_id: str,
-    audio_path: Path,
-    language: str,
-    min_speakers: int,
-    max_speakers: int,
-    denoise_model: str = None,
-    snr_threshold: float = None,
-    file_hash: str = None,
-):
-    """Background transcription worker."""
-    try:
-        jobs[job_id]["status"] = "converting"
-        wav_path = _convert_to_wav(audio_path)
-
-        jobs[job_id]["status"] = "queued"
-        with _gpu_sem:
-            jobs[job_id]["status"] = (
-                "denoising"
-                if (denoise_model or DENOISE_MODEL) != "none"
-                else "transcribing"
-            )
-            clean_path = _maybe_denoise(wav_path, denoise_model, snr_threshold)
-
-            # DF peaks at ~15 GB reserved in PyTorch's CUDA cache.
-            # ctranslate2 (Whisper) calls cudaMalloc directly and sees the OS
-            # free memory — not PyTorch's allocator pool — so it OOMs unless we
-            # explicitly flush the cache before Whisper cold-loads.
-            try:
-                import torch as _torch
-                import gc as _gc
-
-                _gc.collect()
-                if _torch.cuda.is_available():
-                    _torch.cuda.empty_cache()
-            except Exception as exc:
-                logger.warning("pre-whisper CUDA cache flush failed: %s", exc)
-
-            jobs[job_id]["status"] = "transcribing"
-            result = pipeline.process(
-                str(clean_path),
-                raw_audio_path=str(wav_path),
-                language=language,
-                min_speakers=min_speakers or None,
-                max_speakers=max_speakers or None,
-            )
-
-        # Release cached CUDA memory so the next queued job has headroom
-        try:
-            import torch as _torch
-            import gc as _gc
-
-            _gc.collect()
-            if _torch.cuda.is_available():
-                _torch.cuda.empty_cache()
-        except Exception as exc:
-            logger.warning("post-pipeline CUDA cache flush failed: %s", exc)
-
-        # Match speakers against voiceprint DB
-        jobs[job_id]["status"] = "identifying"
-        speaker_map = {}
-        for spk_label, embedding in result["speaker_embeddings"].items():
-            spk_id, spk_name, sim = voiceprint_db.identify(
-                embedding, threshold=VOICEPRINT_THRESHOLD
-            )
-            speaker_map[spk_label] = {
-                "matched_id": spk_id,
-                "matched_name": spk_name or spk_label,
-                "similarity": round(sim, 4),
-                "embedding_key": spk_label,
-            }
-
-        # [CQ-H6] 若所有 turn 均短于 MIN_EMBED_DURATION，embeddings 为空 → 不产生 speaker_map。
-        # 记录明确 warning，让前端可以区分"无可登记 speaker"并避免传 'undefined' 字符串。
-        warning = None
-        if not speaker_map:
-            warning = "no_speakers_detected"
-            logger.warning(
-                "Job %s produced no speaker embeddings (all turns < min duration)",
-                job_id,
-            )
-
-        # Build final segments
-        segments = []
-        for i, seg in enumerate(result["segments"]):
-            spk_label = seg["speaker"]
-            match = speaker_map.get(spk_label, {})
-            out = {
-                "id": i,
-                "start": seg["start"],
-                "end": seg["end"],
-                "text": seg["text"],
-                "speaker_label": spk_label,
-                "speaker_id": match.get("matched_id"),
-                "speaker_name": match.get("matched_name", spk_label),
-                "similarity": match.get("similarity", 0),
-            }
-            # Forward word-level timestamps when forced alignment produced them
-            # (0.3.0+). Absent when the language has no alignment model or
-            # alignment failed — clients must treat the key as optional.
-            if seg.get("words"):
-                out["words"] = seg["words"]
-            segments.append(out)
-
-        # Save transcription result
-        effective_denoise = (denoise_model or DENOISE_MODEL).strip().lower()
-        effective_snr = (
-            snr_threshold if snr_threshold is not None else DENOISE_SNR_THRESHOLD
-        )
-        tr = {
-            "id": job_id,
-            "filename": audio_path.name,
-            "created_at": datetime.now().isoformat(),
-            "status": "completed",
-            "language": language,
-            "segments": segments,
-            "speaker_map": speaker_map,
-            "unique_speakers": result["unique_speakers"],
-            "params": {
-                "language": language or "auto",
-                "denoise_model": effective_denoise,
-                "snr_threshold": effective_snr,
-                "voiceprint_threshold": VOICEPRINT_THRESHOLD,
-                "min_speakers": min_speakers,
-                "max_speakers": max_speakers,
-            },
-        }
-        if warning is not None:
-            tr["warning"] = warning
-
-        tr_dir = TRANSCRIPTIONS_DIR / job_id
-        tr_dir.mkdir(exist_ok=True)
-        (tr_dir / "result.json").write_text(
-            json.dumps(tr, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-        # Save raw embeddings for later enrollment
-        import numpy as np
-
-        for spk_label, emb in result["speaker_embeddings"].items():
-            np.save(tr_dir / f"emb_{spk_label}.npy", emb)
-
-        if file_hash:
-            _register_hash(file_hash, job_id)
-
-        # CQ-C1: After each successful transcription, check if AS-norm cohort
-        # should be rebuilt. Every 10th job (or when cohort is absent) we rebuild
-        # so that newly enrolled speakers contribute to normalization without
-        # requiring a server restart.
-        try:
-            _cohort_rebuild_counter[0] = _cohort_rebuild_counter.get(0, 0) + 1
-            if voiceprint_db._asnorm is None or _cohort_rebuild_counter[0] % 10 == 0:
-                voiceprint_db.build_cohort_from_transcriptions(str(TRANSCRIPTIONS_DIR))
-                cohort_size = (
-                    len(voiceprint_db._asnorm._cohort)
-                    if voiceprint_db._asnorm is not None
-                    and hasattr(voiceprint_db._asnorm, "_cohort")
-                    else 0
-                )
-                logger.info("AS-norm cohort rebuilt: size=%d", cohort_size)
-        except Exception as exc:
-            logger.warning("cohort rebuild failed: %s", exc)
-
-        jobs[job_id]["status"] = "completed"
-        jobs[job_id]["result"] = tr
-        logger.info(
-            "Job %s completed: %d segments, %d speakers",
-            job_id,
-            len(segments),
-            len(speaker_map),
-        )
-
-    except Exception as e:
-        logger.exception("Job %s failed", job_id)
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
-
-
-# --- Routes ---
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    return (Path("static/index.html")).read_text(encoding="utf-8")
-
-
-@app.post("/api/transcribe")
-async def transcribe(
-    file: UploadFile = File(...),
-    language: str = Form(None),
-    min_speakers: int = Form(0),
-    max_speakers: int = Form(0),
-    denoise_model: str = Form("none"),
-    snr_threshold: float = Form(None),
-):
-    # Normalise empty string to None so pipeline treats it as auto-detect.
-    language = language.strip() if language else None
-
-    job_id = f"tr_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
-
-    safe_filename = PurePosixPath(file.filename or "upload").name or "upload"
-    # Strip control chars before using the name in paths/logs — PurePosixPath.name
-    # preserves newlines and ANSI escapes which would otherwise enable log injection.
-    safe_filename = _safe_log_filename(safe_filename) or "upload"
-    save_path = UPLOADS_DIR / f"{job_id}_{safe_filename}"
-
-    size = 0
-    with open(save_path, "wb") as f:
-        while True:
-            chunk = file.file.read(UPLOAD_CHUNK)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
-                f.close()
-                save_path.unlink(missing_ok=True)
-                raise HTTPException(
-                    413,
-                    f"Upload exceeds MAX_UPLOAD_BYTES ({MAX_UPLOAD_BYTES} bytes)",
-                )
-            f.write(chunk)
-
-    # Dedup: if identical audio was already transcribed, return existing result.
-    file_hash = _compute_file_hash(save_path)
-    existing_id = _lookup_hash(file_hash)
-    if existing_id:
-        save_path.unlink(missing_ok=True)
-        logger.info(
-            "Dedup hit: %s already transcribed as %s", safe_filename, existing_id
-        )
-        return {"id": existing_id, "status": "completed", "deduplicated": True}
-
-    jobs[job_id] = {
-        "status": "queued",
-        "filename": safe_filename,
-        "created_at": datetime.now().isoformat(),
-    }
-    # CD-C3: daemon=True ensures this thread does not prevent the process from
-    # exiting on SIGTERM — the OS will clean up in-progress transcriptions on
-    # shutdown rather than hanging indefinitely waiting for the thread to finish.
-    thread = Thread(
-        target=_run_transcription,
-        args=(
-            job_id,
-            save_path,
-            language,
-            min_speakers,
-            max_speakers,
-            denoise_model,
-            snr_threshold,
-            file_hash,
-        ),
-        daemon=True,
-    )
-    thread.start()
-
-    return {"id": job_id, "status": "queued"}
-
-
-@app.get("/api/jobs/{job_id}")
-async def get_job(job_id: str):
-    if job_id not in jobs:
-        raise HTTPException(404, "Job not found")
-    job = jobs[job_id]
-    resp = {"id": job_id, "status": job["status"], "filename": job.get("filename")}
-    if job["status"] == "completed":
-        resp["result"] = job["result"]
-    elif job["status"] == "failed":
-        resp["error"] = job.get("error")
-    return resp
-
-
-@app.get("/api/transcriptions")
-async def list_transcriptions():
-    results = []
-    for tr_dir in sorted(TRANSCRIPTIONS_DIR.iterdir(), reverse=True):
-        result_file = tr_dir / "result.json"
-        if result_file.exists():
-            data = json.loads(result_file.read_text(encoding="utf-8"))
-            results.append(
-                {
-                    "id": data["id"],
-                    "filename": data["filename"],
-                    "created_at": data["created_at"],
-                    "segment_count": len(data["segments"]),
-                    "speaker_count": len(data.get("unique_speakers", [])),
-                }
-            )
-    return results
-
-
-@app.get("/api/transcriptions/{tr_id}")
-async def get_transcription(
-    tr_id: Annotated[str, FPath(pattern=r"^tr_[A-Za-z0-9_-]{1,64}$")],
-):
-    result_file = _safe_tr_dir(tr_id) / "result.json"
-    if not result_file.exists():
-        raise HTTPException(404, "Transcription not found")
-    return json.loads(result_file.read_text(encoding="utf-8"))
-
-
-@app.put("/api/transcriptions/{tr_id}/segments/{seg_id}/speaker")
-async def reassign_speaker(
-    tr_id: Annotated[str, FPath(pattern=r"^tr_[A-Za-z0-9_-]{1,64}$")],
-    seg_id: int,
-    speaker_name: str = Form(...),
-    speaker_id: str = Form(None),
-):
-    """Reassign a segment to a different speaker and optionally enroll the voiceprint."""
-    result_file = _safe_tr_dir(tr_id) / "result.json"
-    if not result_file.exists():
-        raise HTTPException(404, "Transcription not found")
-    data = json.loads(result_file.read_text(encoding="utf-8"))
-
-    seg = next((s for s in data["segments"] if s["id"] == seg_id), None)
-    if seg is None:
-        raise HTTPException(404, "Segment not found")
-
-    seg["speaker_name"] = speaker_name
-    if speaker_id:
-        seg["speaker_id"] = speaker_id
-
-    # [CQ-H7] 同步更新 speaker_map，保持人工纠错在整条记录内一致。
-    # 原 segment 可能引用一个 speaker_label（如 "SPEAKER_01"），我们在 speaker_map
-    # 的对应条目上更新 matched_name / matched_id，而不是改 key。
-    spk_label = seg.get("speaker_label")
-    speaker_map = data.get("speaker_map") or {}
-    if spk_label and spk_label in speaker_map:
-        speaker_map[spk_label]["matched_name"] = speaker_name
-        if speaker_id:
-            speaker_map[spk_label]["matched_id"] = speaker_id
-        data["speaker_map"] = speaker_map
-
-    result_file.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return {"ok": True}
-
-
-@app.post("/api/voiceprints/enroll")
-async def enroll_speaker(
-    tr_id: str = Form(...),
-    speaker_label: str = Form(...),
-    speaker_name: str = Form(...),
-    speaker_id: str = Form(None),
-):
-    """Enroll or update a voiceprint from a transcription's speaker embedding."""
-    import numpy as np
-
-    # SEC-C2: validate both tr_id and speaker_label before building any path.
-    safe_label = _safe_speaker_label(speaker_label)
-    emb_path = _safe_tr_dir(tr_id) / f"emb_{safe_label}.npy"
-    if not emb_path.exists():
-        raise HTTPException(404, "Embedding not found for this speaker label")
-    # SEC-C1: allow_pickle=False prevents arbitrary code execution via
-    # a crafted .npy file that embeds a pickle payload (CVSS 9.1).
-    embedding = np.load(emb_path, allow_pickle=False)
-
-    if speaker_id and voiceprint_db.get_speaker(speaker_id):
-        voiceprint_db.update_speaker(speaker_id, embedding, name=speaker_name)
-        return {"action": "updated", "speaker_id": speaker_id}
-    else:
-        new_id = voiceprint_db.add_speaker(speaker_name, embedding)
-        return {"action": "created", "speaker_id": new_id}
-
-
-@app.get("/api/voiceprints")
-async def list_voiceprints():
-    return voiceprint_db.list_speakers()
-
-
-@app.post("/api/voiceprints/rebuild-cohort")
-async def rebuild_cohort():
-    """Rebuild the AS-norm cohort from all processed transcriptions."""
-    cohort_path = TRANSCRIPTIONS_DIR / "asnorm_cohort.npy"
-    n = voiceprint_db.build_cohort_from_transcriptions(
-        str(TRANSCRIPTIONS_DIR), save_path=str(cohort_path)
-    )
-    # [CQ-M10] 报告跳过/损坏的文件数，让调用方看到 cohort 的实际覆盖情况
-    skipped = getattr(voiceprint_db, "last_cohort_skipped", 0)
-    return {
-        "cohort_size": n,
-        "skipped": skipped,
-        "saved_to": str(cohort_path),
-    }
-
-
-@app.delete("/api/voiceprints/{speaker_id}")
-async def delete_voiceprint(speaker_id: str):
-    try:
-        voiceprint_db.delete_speaker(speaker_id)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-    return {"ok": True}
-
-
-@app.put("/api/voiceprints/{speaker_id}/name")
-async def rename_voiceprint(speaker_id: str, name: str = Form(...)):
-    try:
-        voiceprint_db.rename_speaker(speaker_id, name)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-    return {"ok": True}
-
-
-@app.get("/api/export/{tr_id}")
-async def export_transcription(
-    tr_id: Annotated[str, FPath(pattern=r"^tr_[A-Za-z0-9_-]{1,64}$")],
-    format: str = "srt",
-):
-    result_file = _safe_tr_dir(tr_id) / "result.json"
-    if not result_file.exists():
-        raise HTTPException(404, "Transcription not found")
-    data = json.loads(result_file.read_text(encoding="utf-8"))
-    segments = data["segments"]
-
-    if format == "srt":
-        lines = []
-        for i, seg in enumerate(segments, 1):
-            start = _format_srt_time(seg["start"])
-            end = _format_srt_time(seg["end"])
-            lines.append(
-                f"{i}\n{start} --> {end}\n[{seg['speaker_name']}] {seg['text']}\n"
-            )
-        return PlainTextResponse(
-            "\n".join(lines),
-            media_type="text/srt",
-            headers={"Content-Disposition": f"attachment; filename={tr_id}.srt"},
-        )
-    elif format == "txt":
-        lines = []
-        for seg in segments:
-            ts = _format_timestamp(seg["start"])
-            lines.append(f"[{ts}] {seg['speaker_name']}: {seg['text']}")
-        return PlainTextResponse(
-            "\n".join(lines),
-            media_type="text/plain",
-            headers={"Content-Disposition": f"attachment; filename={tr_id}.txt"},
-        )
-    elif format == "json":
-        return FileResponse(
-            result_file, media_type="application/json", filename=f"{tr_id}.json"
-        )
-    else:
-        raise HTTPException(400, "Unsupported format. Use: srt, txt, json")
-
-
-def _format_srt_time(seconds: float) -> str:
-    # [CQ-M13] 防御 None / NaN / 负秒——SRT 不允许负时间戳，NaN 会导致 int() 抛异常。
-    if seconds is None or seconds != seconds:  # NaN 自身不等于自身
-        seconds = 0.0
-    seconds = max(0.0, float(seconds))
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds % 1) * 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-
-def _format_timestamp(seconds: float) -> str:
-    if seconds is None or seconds != seconds:
-        seconds = 0.0
-    seconds = max(0.0, float(seconds))
-    m = int(seconds // 60)
-    s = int(seconds % 60)
-    return f"{m:02d}:{s:02d}"
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
+
+app.include_router(health.router)
+app.include_router(transcriptions.router)
+app.include_router(voiceprints.router)
