@@ -464,6 +464,16 @@ def _run_transcription(
                 "embedding_key": spk_label,
             }
 
+        # [CQ-H6] 若所有 turn 均短于 MIN_EMBED_DURATION，embeddings 为空 → 不产生 speaker_map。
+        # 记录明确 warning，让前端可以区分"无可登记 speaker"并避免传 'undefined' 字符串。
+        warning = None
+        if not speaker_map:
+            warning = "no_speakers_detected"
+            logger.warning(
+                "Job %s produced no speaker embeddings (all turns < min duration)",
+                job_id,
+            )
+
         # Build final segments
         segments = []
         for i, seg in enumerate(result["segments"]):
@@ -509,6 +519,8 @@ def _run_transcription(
                 "max_speakers": max_speakers,
             },
         }
+        if warning is not None:
+            tr["warning"] = warning
 
         tr_dir = TRANSCRIPTIONS_DIR / job_id
         tr_dir.mkdir(exist_ok=True)
@@ -674,6 +686,17 @@ async def reassign_speaker(
     seg["speaker_name"] = speaker_name
     if speaker_id:
         seg["speaker_id"] = speaker_id
+
+    # [CQ-H7] 同步更新 speaker_map，保持人工纠错在整条记录内一致。
+    # 原 segment 可能引用一个 speaker_label（如 "SPEAKER_01"），我们在 speaker_map
+    # 的对应条目上更新 matched_name / matched_id，而不是改 key。
+    spk_label = seg.get("speaker_label")
+    speaker_map = data.get("speaker_map") or {}
+    if spk_label and spk_label in speaker_map:
+        speaker_map[spk_label]["matched_name"] = speaker_name
+        if speaker_id:
+            speaker_map[spk_label]["matched_id"] = speaker_id
+        data["speaker_map"] = speaker_map
 
     result_file.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
