@@ -38,7 +38,7 @@ jobs:
       - name: Compute image tags
         id: tags
         run: |
-          GHCR_IMAGE="ghcr.io/${{ github.repository }}"
+          GHCR_IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           DOCKERHUB_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/voscript"
           TAGS="$GHCR_IMAGE:latest,$DOCKERHUB_IMAGE:latest"
           # Tag-triggered builds (release or push-tag) get the version tag too.
