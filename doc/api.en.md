@@ -32,7 +32,7 @@ queued → converting → denoising (if DENOISE_MODEL ≠ none) → transcribing
                                                                                               ↘ failed
 ```
 
-The OpenPlaud(Maple) worker polls `/api/jobs/{id}` every 5 seconds and stops
+The BetterAINote worker polls `/api/jobs/{id}` every 5 seconds and stops
 as soon as it sees `completed` or `failed`.
 
 ## Endpoints
@@ -278,9 +278,9 @@ Body shape:
 { "detail": "..." }
 ```
 
-## OpenPlaud(Maple) mapping
+## BetterAINote mapping
 
-| OpenPlaud(Maple) code | Endpoint called |
+| BetterAINote code | Endpoint called |
 | --- | --- |
 | `submitVoiceTranscribeJob` | `POST /api/transcribe` |
 | `pollVoiceTranscribeJob` | `GET /api/jobs/{id}` |
@@ -289,6 +289,6 @@ Body shape:
 | `VoiceTranscribeClient.renameVoiceprint` | `PUT /api/voiceprints/{id}/name` |
 | `VoiceTranscribeClient.deleteVoiceprint` | `DELETE /api/voiceprints/{id}` |
 
-Source files live in the [OpenPlaud(Maple) repo](https://github.com/MapleEve/openplaud)
+Source files live in the [BetterAINote repo](https://github.com/MapleEve/openplaud)
 under `src/lib/transcription/providers/voice-transcribe-provider.ts` and
 `src/lib/voice-transcribe/client.ts`.

@@ -65,7 +65,7 @@ It's a plain HTTP service. Two config values and you're done:
 - **Transcription base URL**: `http://<host>:8780`
 - **API key**: the `API_KEY` you set in `.env`
 
-[OpenPlaud(Maple)](https://github.com/MapleEve/openplaud) connects this way. Any other client works the same. Full API contract → [`doc/api.en.md`](./doc/api.en.md)
+[BetterAINote](https://github.com/MapleEve/openplaud) connects this way. Any other client works the same. Full API contract → [`doc/api.en.md`](./doc/api.en.md)
 
 ## Documentation
 

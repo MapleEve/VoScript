@@ -121,7 +121,7 @@ export WHISPER_MODEL=medium       # large-v3 on CPU is too slow
 export DATA_DIR=$(pwd)/data
 mkdir -p "$DATA_DIR"
 
-# Note this API_KEY — OpenPlaud(Maple) needs the exact same value
+# Note this API_KEY — BetterAINote needs the exact same value
 
 # 5. launch
 cd app
@@ -140,7 +140,7 @@ Known limitations:
 - If you have access to a Linux / Windows host with an NVIDIA GPU, run the
   service there and use Mac as the client
 
-Everything after this point (config, wiring into OpenPlaud(Maple)) is the
+Everything after this point (config, wiring into BetterAINote) is the
 same, just **skip every docker step**.
 
 ## 1. Clone the repo
@@ -250,14 +250,14 @@ curl -sS http://localhost:8780/api/voiceprints \
 Open <http://localhost:8780/> in a browser for a minimal web UI you can
 upload audio to.
 
-## 5. Wire it into OpenPlaud(Maple)
+## 5. Wire it into BetterAINote
 
-In OpenPlaud(Maple) → Settings → Transcription, set:
+In BetterAINote → Settings → Transcription, set:
 
 - **Private transcription base URL**: `http://<host>:8780`
 - **Private transcription API key**: the **exact** `API_KEY` from `.env`
 
-Once saved, the OpenPlaud(Maple) worker will route every recording through
+Once saved, the BetterAINote worker will route every recording through
 this service. See [`api.en.md`](./api.en.md) for the full contract.
 
 ## Upgrades
@@ -313,9 +313,9 @@ host with an NVIDIA GPU instead.
 → Your `requirements.txt` has been edited and numpy upgraded to 2.x. Keep
 the `numpy<2.0` pin.
 
-### Service is up but OpenPlaud(Maple) can't reach it
+### Service is up but BetterAINote can't reach it
 → Check that `API_KEY` matches **exactly** on both sides (case/whitespace),
-and that OpenPlaud(Maple)'s host can actually reach `:8780` (firewall,
+and that BetterAINote's host can actually reach `:8780` (firewall,
 docker networks).
 
 ### What do I back up?

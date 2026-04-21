@@ -181,14 +181,14 @@
 
 ## 0.2.1 — 改名为 voscript (2026-04-18)
 
-解耦和 OpenPlaud(Maple) 的绑定——服务本身可以独立使用，因此改名：
+解耦和 BetterAINote 的绑定——服务本身可以独立使用，因此改名：
 
 - **仓库**：`MapleEve/openplaud-voice-transcribe` → `MapleEve/voscript`
   （GitHub 老 URL 自动 301 重定向，老 clone 不会失效）
 - **Docker 服务/容器名**：`voice-transcribe` → `voscript`
   （`docker logs voscript`、`docker exec voscript …`）
 - **镜像名**：compose 自动产生的 `voscript-voscript:latest`
-- **README/文档**：重写定位为独立转录服务，OpenPlaud(Maple) 改为
+- **README/文档**：重写定位为独立转录服务，BetterAINote 改为
   "一个已知的接入方"而不是身份绑定
 - **HTTP 合同、文件布局、环境变量、数据目录结构 全部不变**——现有调用方
   零修改
@@ -238,7 +238,7 @@
 - `GET /` 现在对浏览器直接访问放行：配了 `API_KEY` 之前浏览器直接访问 `/`
   会 401，UI 不可用。鉴权保护实际落在 `/api/*`，由 UI 发起的 fetch 负责
   带 key。
-- `VoiceTranscribeProvider` 在 OpenPlaud(Maple) 侧把 segment 的 `speaker`
+- `VoiceTranscribeProvider` 在 BetterAINote 侧把 segment 的 `speaker`
   字段改回原始 `speaker_label`（`SPEAKER_XX`），修掉"自动匹配后就没法再
   登记"的断链。
 
@@ -251,7 +251,7 @@
 
 ## 0.1.0 — 首次公开发布
 
-- 首次公开发布 [OpenPlaud(Maple)](https://github.com/MapleEve/openplaud) 的私有转录后端。
+- 首次公开发布 [BetterAINote](https://github.com/MapleEve/openplaud) 的私有转录后端。
 - 异步任务流水线：`queued → converting → transcribing → identifying → completed`。
 - faster-whisper `large-v3` + pyannote `3.1` + ECAPA-TDNN 声纹提取。
 - 持久化声纹库，基于余弦相似度自动匹配。

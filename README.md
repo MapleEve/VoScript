@@ -63,7 +63,7 @@ curl -sf http://localhost:8780/healthz
 - **转录服务地址**：`http://<主机>:8780`
 - **API Key**：`.env` 里设的那个 `API_KEY`
 
-[OpenPlaud(Maple)](https://github.com/MapleEve/openplaud) 就是这样接的，其它客户端一样。完整接口合同 → [`doc/api.zh.md`](./doc/api.zh.md)
+[BetterAINote](https://github.com/MapleEve/openplaud) 就是这样接的，其它客户端一样。完整接口合同 → [`doc/api.zh.md`](./doc/api.zh.md)
 
 ## 文档
 

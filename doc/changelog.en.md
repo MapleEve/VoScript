@@ -197,7 +197,7 @@ Three independent core upgrades released together.
 
 ## 0.2.1 — Renamed to voscript (2026-04-18)
 
-Decoupled from OpenPlaud(Maple) — the service stands on its own, so it now
+Decoupled from BetterAINote — the service stands on its own, so it now
 has its own name:
 
 - **Repo**: `MapleEve/openplaud-voice-transcribe` → `MapleEve/voscript`
@@ -207,7 +207,7 @@ has its own name:
   (`docker logs voscript`, `docker exec voscript …`).
 - **Image name**: compose produces `voscript-voscript:latest` automatically.
 - **README / docs**: repositioned as an independent transcription service,
-  with OpenPlaud(Maple) called out as one known consumer rather than the
+  with BetterAINote called out as one known consumer rather than the
   service's identity.
 - **HTTP contract, file layout, env vars, on-disk data layout: unchanged.**
   Existing clients keep working with zero code changes.
@@ -268,7 +268,7 @@ independent penetration test.
   bundled Web UI was effectively unreachable because browsers can't
   attach a Bearer header to a direct navigation; the UI's own
   fetch-to-`/api/*` calls still carry the key.
-- On the OpenPlaud(Maple) side, `VoiceTranscribeProvider` now keeps
+- On the BetterAINote side, `VoiceTranscribeProvider` now keeps
   the raw `speaker_label` (`SPEAKER_XX`) in `speakerSegments[].speaker`,
   so re-enrollment still works after an automatic voiceprint match.
 
@@ -284,7 +284,7 @@ independent penetration test.
 ## 0.1.0 — Initial public release
 
 - First public release of the private transcription backend used by
-  [OpenPlaud(Maple)](https://github.com/MapleEve/openplaud).
+  [BetterAINote](https://github.com/MapleEve/openplaud).
 - Async job pipeline: `queued → converting → transcribing → identifying → completed`.
 - faster-whisper `large-v3` + pyannote `3.1` + ECAPA-TDNN speaker embeddings.
 - Persistent voiceprint DB with cosine-similarity auto-match.

@@ -31,7 +31,7 @@ queued → converting → denoising (if DENOISE_MODEL ≠ none) → transcribing
                                                                                               ↘ failed
 ```
 
-OpenPlaud(Maple) worker 每 5 秒轮询一次 `/api/jobs/{id}`，看到 `completed`
+BetterAINote worker 每 5 秒轮询一次 `/api/jobs/{id}`，看到 `completed`
 或 `failed` 就终止轮询。
 
 ## 接口清单
@@ -304,9 +304,9 @@ embedding 加入 cohort；必须显式调用 `POST /api/voiceprints/rebuild-coho
 { "detail": "..." }
 ```
 
-## 与 OpenPlaud(Maple) 的对应关系
+## 与 BetterAINote 的对应关系
 
-| OpenPlaud(Maple) 代码 | 调用的接口 |
+| BetterAINote 代码 | 调用的接口 |
 | --- | --- |
 | `submitVoiceTranscribeJob` | `POST /api/transcribe` |
 | `pollVoiceTranscribeJob` | `GET /api/jobs/{id}` |
@@ -315,6 +315,6 @@ embedding 加入 cohort；必须显式调用 `POST /api/voiceprints/rebuild-coho
 | `VoiceTranscribeClient.renameVoiceprint` | `PUT /api/voiceprints/{id}/name` |
 | `VoiceTranscribeClient.deleteVoiceprint` | `DELETE /api/voiceprints/{id}` |
 
-源码位置见 [OpenPlaud(Maple) 仓库](https://github.com/MapleEve/openplaud)下的
+源码位置见 [BetterAINote 仓库](https://github.com/MapleEve/openplaud)下的
 `src/lib/transcription/providers/voice-transcribe-provider.ts` 和
 `src/lib/voice-transcribe/client.ts`。
