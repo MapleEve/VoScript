@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' cdn.tailwindcss.com; script-src 'self' 'unsafe-inline' cdn.tailwindcss.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';">
 <title>voscript</title>
 <link rel="icon" href="data:,">
 <script src="https://cdn.tailwindcss.com"></script>
@@ -682,7 +683,6 @@
       const current = info.matched
         ? `已匹配 <span class="font-medium text-foreground">${escapeHtml(info.name)}</span> · ${Math.round(info.sim*100)}%`
         : '<span class="text-muted-foreground">未识别</span>';
-      const onclick = `enrollSpeaker('${escapeJs(label)}', '${escapeJs(info.speakerId)}')`;
       return `<div class="border rounded-md p-3">
         <div class="flex items-center gap-2 mb-3">
           <span class="spk-${ci} spk-badge px-2 py-0.5 rounded text-xs font-mono">${escapeHtml(label)}</span>
@@ -691,9 +691,12 @@
         <div class="flex gap-2">
           <input type="text" placeholder="说话人姓名"
                  class="input h-8 text-xs flex-1"
-                 id="enroll-name-${escapeHtml(label)}"
+                 data-enroll-input="${escapeHtml(label)}"
                  value="${info.matched ? escapeHtml(info.name) : ''}">
-          <button class="btn-default btn-sm" onclick="${onclick}">
+          <button class="btn-default btn-sm"
+                  data-action="enroll"
+                  data-label="${escapeHtml(label)}"
+                  data-speaker-id="${escapeHtml(info.speakerId ?? '')}">
             ${info.matched ? '更新' : '登记'}
           </button>
         </div>
@@ -702,8 +705,8 @@
   }
 
   async function enrollSpeaker(label, existingId) {
-    const nameInput = document.getElementById(`enroll-name-${label}`);
-    const name = nameInput.value.trim();
+    const nameInput = document.querySelector(`[data-enroll-input="${CSS.escape(label)}"]`);
+    const name = (nameInput?.value || '').trim();
     if (!name) { toast('请输入姓名', 'error'); return; }
     const form = new FormData();
     form.append('tr_id', currentTrId);
@@ -733,13 +736,15 @@
     }
     empty.classList.add('hidden');
     el.innerHTML = list.map(tr => `
-      <div class="border rounded-md p-4 cursor-pointer hover:bg-accent/30 transition-colors" onclick="loadTranscription('${tr.id}')">
+      <div class="border rounded-md p-4 cursor-pointer hover:bg-accent/30 transition-colors"
+           data-action="load-transcription"
+           data-tr-id="${escapeHtml(tr.id)}">
         <div class="flex items-center justify-between gap-2">
           <span class="font-medium truncate">${escapeHtml(tr.filename)}</span>
-          <span class="text-xs text-muted-foreground whitespace-nowrap">${(tr.created_at || '').replace('T',' ').slice(0,19)}</span>
+          <span class="text-xs text-muted-foreground whitespace-nowrap">${escapeHtml((tr.created_at || '').replace('T',' ').slice(0,19))}</span>
         </div>
         <div class="text-xs text-muted-foreground mt-1">
-          ${tr.segment_count} 段 · ${tr.speaker_count} 位说话人 · <code class="text-[10px]">${tr.id}</code>
+          ${tr.segment_count} 段 · ${tr.speaker_count} 位说话人 · <code class="text-[10px]">${escapeHtml(tr.id)}</code>
         </div>
       </div>
     `).join('');
@@ -771,12 +776,17 @@
         <div class="min-w-0 flex-1">
           <div class="font-medium truncate">${escapeHtml(vp.name)}</div>
           <div class="text-xs text-muted-foreground mt-0.5">
-            <code class="text-[10px]">${vp.id}</code> · ${vp.sample_count} 样本 · 更新于 ${(vp.updated_at || '').replace('T',' ').slice(0,19)}
+            <code class="text-[10px]">${escapeHtml(vp.id)}</code> · ${vp.sample_count} 样本 · 更新于 ${escapeHtml((vp.updated_at || '').replace('T',' ').slice(0,19))}
           </div>
         </div>
         <div class="flex gap-1">
-          <button class="btn-outline btn-sm" onclick="renameVp('${vp.id}')">重命名</button>
-          <button class="btn-sm border border-destructive/50 text-destructive hover:bg-destructive/10 rounded-md px-3 h-8" onclick="deleteVp('${vp.id}', '${escapeJs(vp.name)}')">删除</button>
+          <button class="btn-outline btn-sm"
+                  data-action="rename-vp"
+                  data-vp-id="${escapeHtml(vp.id)}">重命名</button>
+          <button class="btn-sm border border-destructive/50 text-destructive hover:bg-destructive/10 rounded-md px-3 h-8"
+                  data-action="delete-vp"
+                  data-vp-id="${escapeHtml(vp.id)}"
+                  data-vp-name="${escapeHtml(vp.name)}">删除</button>
         </div>
       </div>
     `).join('');
@@ -820,12 +830,27 @@
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
-  function escapeJs(s) { return String(s ?? '').replace(/['\\]/g, '\\$&'); }
   function formatTime(sec) {
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   }
+
+  /* ========== event delegation (replaces inline onclick handlers) ========== */
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-action]');
+    if (!t) return;
+    const action = t.dataset.action;
+    if (action === 'enroll') {
+      enrollSpeaker(t.dataset.label, t.dataset.speakerId || '');
+    } else if (action === 'load-transcription') {
+      loadTranscription(t.dataset.trId);
+    } else if (action === 'rename-vp') {
+      renameVp(t.dataset.vpId);
+    } else if (action === 'delete-vp') {
+      deleteVp(t.dataset.vpId, t.dataset.vpName || '');
+    }
+  });
 
   /* ========== feature status panel toggle ========== */
   document.addEventListener('DOMContentLoaded', () => {
