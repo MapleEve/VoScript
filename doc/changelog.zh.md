@@ -17,6 +17,17 @@
 - 所有已有接口行为不变
 - 未构建 cohort 时（零 transcription 环境），声纹识别自动回退到 0.4.0 的余弦逻辑
 
+### 升级迁移说明（从 0.4.x → 0.5.0）
+
+- **0.4.x 历史转录不包含 `emb_*.npy` 时，AS-norm cohort 不会被自动激活。**
+  启动日志会显示 `cohort_size=0` 或低于 10，`identify` 继续走 0.4.0 的 raw cosine +
+  自适应阈值路径。
+- 如果希望启用 AS-norm 归一化评分，0.5.0 升级后请：
+  1. 确认 `data/transcriptions/` 下至少有 10 条历史转录包含 `emb_*.npy`；
+  2. 调用 `POST /api/voiceprints/rebuild-cohort` 手动重建 cohort；
+  3. 或让服务重新跑一批新转录再重启（启动时会重建 cohort）。
+- 后续运行期新增的转录不会自动合入 cohort —— 需要再次触发 rebuild-cohort 或重启服务。
+
 ## 0.4.0 — 自适应声纹阈值 + 降噪 SNR 门限 + OSD (2026-04-19)
 
 ### 自适应声纹阈值
@@ -36,6 +47,8 @@
 - CUDA OOM 修复：DeepFilterNet 处理长音频后（~15 GB PyTorch CUDA 保留），在调用 Whisper 前执行 `torch.cuda.empty_cache()` + `gc.collect()` 解决 ctranslate2 的 OOM 问题
 
 ### 重叠语音检测 OSD
+
+> **注意**：OSD 功能已在 v0.5.x 中移除（参见上方 0.5.0 节与 git 历史中的 `Revert "feat: add overlapped speech detection ..."` 提交）。以下描述仅为历史记录，相关请求参数（`osd`）与响应字段（`has_overlap`）在当前版本中不再可用。
 
 - `POST /api/transcribe` 新增 `osd`（bool，默认 `false`）字段
 - 启用时，每个 segment 包含 `has_overlap: bool` 字段，标记该片段中点是否存在多人同时说话
