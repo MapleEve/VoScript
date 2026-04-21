@@ -141,15 +141,57 @@ async def transcribe(
 
 @router.get("/jobs/{job_id}")
 async def get_job(job_id: str):
-    if job_id not in jobs:
-        raise HTTPException(404, "Job not found")
-    job = jobs[job_id]
-    resp = {"id": job_id, "status": job["status"], "filename": job.get("filename")}
-    if job["status"] == "completed":
-        resp["result"] = job["result"]
-    elif job["status"] == "failed":
-        resp["error"] = job.get("error")
-    return resp
+    if job_id in jobs:
+        job = jobs[job_id]
+        resp = {"id": job_id, "status": job["status"], "filename": job.get("filename")}
+        if job["status"] == "completed":
+            resp["result"] = job["result"]
+        elif job["status"] == "failed":
+            resp["error"] = job.get("error")
+        return resp
+
+    # AR-C2 fallback: process restarted — try reading persisted status.json.
+    status_path = TRANSCRIPTIONS_DIR / job_id / "status.json"
+    result_path = TRANSCRIPTIONS_DIR / job_id / "result.json"
+
+    if status_path.exists():
+        try:
+            status_data = json.loads(status_path.read_text())
+        except Exception:
+            raise HTTPException(404, "Job not found")
+
+        current_status = status_data.get("status")
+
+        if current_status == "completed" and result_path.exists():
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+            except Exception:
+                result = None
+            return {
+                "id": job_id,
+                "status": "completed",
+                "filename": status_data.get("filename"),
+                "result": result,
+            }
+
+        if current_status not in ("completed", "failed"):
+            # In-progress status persisted by a previous process that no longer
+            # owns this job — treat as a restart failure.
+            return {
+                "id": job_id,
+                "status": "failed",
+                "error": "Process restarted while job was in progress",
+                "filename": status_data.get("filename"),
+            }
+
+        return {
+            "id": job_id,
+            "status": current_status,
+            "error": status_data.get("error"),
+            "filename": status_data.get("filename"),
+        }
+
+    raise HTTPException(404, "Job not found")
 
 
 @router.get("/transcriptions")

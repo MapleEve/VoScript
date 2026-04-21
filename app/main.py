@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.routers import health, transcriptions, voiceprints
+from services.job_service import recover_orphan_jobs
 from config import (
     ALLOW_NO_AUTH,
     API_KEY,
@@ -42,6 +43,10 @@ async def lifespan(app: FastAPI):
     # Ensure data directories exist
     for d in [TRANSCRIPTIONS_DIR, UPLOADS_DIR, VOICEPRINTS_DIR]:
         d.mkdir(parents=True, exist_ok=True)
+
+    # AR-C2: mark any in-progress jobs from a previous process as failed so
+    # frontend polls receive a definitive terminal state on restart.
+    recover_orphan_jobs()
 
     # Initialise voiceprint DB and AS-norm cohort
     db = VoiceprintDB(str(VOICEPRINTS_DIR))

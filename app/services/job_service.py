@@ -31,6 +31,57 @@ _cohort_rebuild_counter: dict = {}
 
 
 # ---------------------------------------------------------------------------
+# Status persistence helpers (AR-C2)
+# ---------------------------------------------------------------------------
+
+
+def _write_status(job_id: str, status: str, error: str | None = None) -> None:
+    """Write job status to disk for persistence across process restarts."""
+    status_path = TRANSCRIPTIONS_DIR / job_id / "status.json"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        status_path.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "updated_at": datetime.now().isoformat(),
+                    "error": error,
+                }
+            )
+        )
+    except Exception as exc:
+        logger.warning("Failed to write status.json for %s: %s", job_id, exc)
+
+
+def recover_orphan_jobs() -> None:
+    """Mark any in-progress jobs as failed if the process was restarted.
+
+    Called once during application lifespan startup so that frontend polls
+    receive a definitive terminal state instead of hanging on stale
+    'transcribing'/'queued' statuses written by a previous process.
+    """
+    try:
+        for status_path in TRANSCRIPTIONS_DIR.glob("*/status.json"):
+            try:
+                data = json.loads(status_path.read_text())
+                if data.get("status") not in ("completed", "failed"):
+                    data["status"] = "failed"
+                    data["error"] = "Process restarted while job was in progress"
+                    data["updated_at"] = datetime.now().isoformat()
+                    status_path.write_text(json.dumps(data))
+                    logger.info(
+                        "AR-C2: marked orphan job %s as failed",
+                        status_path.parent.name,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "AR-C2: could not recover orphan job at %s: %s", status_path, exc
+                )
+    except Exception as exc:
+        logger.warning("AR-C2: orphan job recovery scan failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Bounded LRU job store (CQ-H2 / PERF-C1)
 # ---------------------------------------------------------------------------
 
@@ -97,15 +148,19 @@ def run_transcription(
     """
     try:
         jobs[job_id]["status"] = "converting"
+        _write_status(job_id, "converting")
         wav_path = convert_to_wav(audio_path)
 
         jobs[job_id]["status"] = "queued"
+        _write_status(job_id, "queued")
         with _gpu_sem:
-            jobs[job_id]["status"] = (
+            _intermediate = (
                 "denoising"
                 if (denoise_model or DENOISE_MODEL) != "none"
                 else "transcribing"
             )
+            jobs[job_id]["status"] = _intermediate
+            _write_status(job_id, _intermediate)
             clean_path = maybe_denoise(wav_path, denoise_model, snr_threshold)
 
             # DF peaks at ~15 GB reserved in PyTorch's CUDA cache.
@@ -124,6 +179,7 @@ def run_transcription(
                 logger.warning("pre-whisper CUDA cache flush failed: %s", exc)
 
             jobs[job_id]["status"] = "transcribing"
+            _write_status(job_id, "transcribing")
             result = pipeline.process(
                 str(clean_path),
                 raw_audio_path=str(wav_path),
@@ -146,6 +202,7 @@ def run_transcription(
 
         # Match speakers against voiceprint DB
         jobs[job_id]["status"] = "identifying"
+        _write_status(job_id, "identifying")
         speaker_map = {}
         for spk_label, embedding in result["speaker_embeddings"].items():
             spk_id, spk_name, sim = voiceprint_db.identify(
@@ -251,6 +308,7 @@ def run_transcription(
 
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["result"] = tr
+        _write_status(job_id, "completed")
         logger.info(
             "Job %s completed: %d segments, %d speakers",
             job_id,
@@ -262,3 +320,4 @@ def run_transcription(
         logger.exception("Job %s failed", job_id)
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
+        _write_status(job_id, "failed", error=str(e))
