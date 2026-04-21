@@ -315,7 +315,6 @@ def maybe_denoise(
         logger.info("DeepFilterNet: denoised %s → %s", wav_path.name, out_path.name)
 
     elif effective_model == "noisereduce":
-        import numpy as np
         import soundfile as sf
         import noisereduce as nr
 

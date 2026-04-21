@@ -14,11 +14,11 @@ import json
 import logging
 import uuid
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from threading import Thread
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException
 from fastapi import Path as FPath
 from fastapi import Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse

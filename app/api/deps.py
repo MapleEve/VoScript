@@ -3,7 +3,6 @@
 import hmac
 
 from fastapi import Header, HTTPException, Request
-from fastapi.responses import JSONResponse
 
 from config import API_KEY
 

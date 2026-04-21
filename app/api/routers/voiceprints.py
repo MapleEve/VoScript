@@ -5,7 +5,7 @@ All routes under /api/voiceprints/*.
 
 import logging
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 
 from api.deps import get_db
 from config import TRANSCRIPTIONS_DIR
