@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import uuid
 import logging
 from datetime import datetime
@@ -222,7 +223,12 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-API-Key",
+        "X-Request-Id",
+    ],
     expose_headers=["*"],
 )
 
@@ -305,9 +311,7 @@ jobs: dict[str, dict] = {}
 
 # Serialise GPU work: only one transcription runs at a time.
 # Concurrent HTTP uploads are fine; they queue here before touching the GPU.
-import threading as _threading
-
-_gpu_sem = _threading.Semaphore(1)
+_gpu_sem = threading.Semaphore(1)
 
 
 def _convert_to_wav(input_path: Path) -> Path:
@@ -358,7 +362,7 @@ def _convert_to_wav(input_path: Path) -> Path:
 
 
 _HASH_INDEX_FILE = TRANSCRIPTIONS_DIR / "hash_index.json"
-_hash_index_lock = __import__("threading").Lock()
+_hash_index_lock = threading.Lock()
 
 
 def _compute_file_hash(path: Path) -> str:
@@ -427,8 +431,8 @@ def _run_transcription(
                 _gc.collect()
                 if _torch.cuda.is_available():
                     _torch.cuda.empty_cache()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("pre-whisper CUDA cache flush failed: %s", exc)
 
             jobs[job_id]["status"] = "transcribing"
             result = pipeline.process(
@@ -447,8 +451,8 @@ def _run_transcription(
             _gc.collect()
             if _torch.cuda.is_available():
                 _torch.cuda.empty_cache()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("post-pipeline CUDA cache flush failed: %s", exc)
 
         # Match speakers against voiceprint DB
         jobs[job_id]["status"] = "identifying"
@@ -800,6 +804,10 @@ async def export_transcription(tr_id: str, format: str = "srt"):
 
 
 def _format_srt_time(seconds: float) -> str:
+    # [CQ-M13] 防御 None / NaN / 负秒——SRT 不允许负时间戳，NaN 会导致 int() 抛异常。
+    if seconds is None or seconds != seconds:  # NaN 自身不等于自身
+        seconds = 0.0
+    seconds = max(0.0, float(seconds))
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
@@ -808,6 +816,9 @@ def _format_srt_time(seconds: float) -> str:
 
 
 def _format_timestamp(seconds: float) -> str:
+    if seconds is None or seconds != seconds:
+        seconds = 0.0
+    seconds = max(0.0, float(seconds))
     m = int(seconds // 60)
     s = int(seconds % 60)
     return f"{m:02d}:{s:02d}"
