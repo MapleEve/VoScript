@@ -1,102 +1,87 @@
+<div align="center">
+
 # 🎙️ VoScript
 
 [简体中文](./README.md) | **English**
 
-<p align="center">
-  <a href="https://github.com/MapleEve/voscript/actions/workflows/ci.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/MapleEve/voscript/ci.yml?branch=main&style=for-the-badge" alt="CI" />
-  </a>
-  <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge" alt="License: Apache 2.0" />
-  <img src="https://img.shields.io/badge/Docker-ready-blue?style=for-the-badge&logo=docker" alt="Docker ready" />
-</p>
+<a href="https://github.com/MapleEve/voscript/actions/workflows/ci.yml">
+  <img src="https://img.shields.io/github/actions/workflow/status/MapleEve/voscript/ci.yml?branch=main&style=for-the-badge" alt="CI" />
+</a>
+<img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge" alt="License: Apache 2.0" />
+<img src="https://img.shields.io/badge/Docker-ready-blue?style=for-the-badge&logo=docker" alt="Docker ready" />
 
-**Self-hosted GPU transcription service — meeting transcripts that remember their speakers.**
+**Meeting recordings → transcripts with real speaker names. Self-hosted, GPU-powered, remembers every voice.**
 
-A small HTTP API that turns audio into timestamped text labelled with speaker names, and that auto-recognizes returning voices across recordings.
+[Quickstart](./doc/quickstart.en.md) · [API Reference](./doc/api.en.md) · [Security](./doc/security.en.md) · [Benchmarks](./doc/benchmarks.en.md) · [Changelog](./doc/changelog.en.md)
+
+</div>
+
+---
+
+You have a meeting recording with six people. You want to know who said what. Whisper gives you a wall of text. pyannote can split it into "Speaker A / Speaker B / Speaker C" — but it doesn't know who anyone is. You still have to label every recording by hand.
+
+VoScript fixes that: **enroll a voice once, and it gets automatically identified in every future recording**. Not "Speaker 2" — "Maple".
 
 ```
-Audio  ──►  faster-whisper large-v3              (transcription)
-        ──►  pyannote 3.1                         (speaker diarization)
-        ──►  DeepFilterNet / noisereduce (optional denoising)
-        ──►  WeSpeaker ResNet34                   (speaker embeddings)
-        ──►  VoiceprintDB                         (cosine match vs. enrolled speakers)
-        ──►  timestamped text with identified speaker names
+Audio  ──►  faster-whisper large-v3     transcription + word-level timestamps
+       ──►  pyannote 3.1                speaker diarization
+       ──►  WeSpeaker ResNet34           speaker embeddings
+       ──►  VoiceprintDB (AS-norm)       match against enrolled voices
+       ──►  timestamped transcript with real speaker names
 ```
-
-[Quickstart](#30-second-start) · [API Reference](./doc/api.en.md) · [Security](./doc/security.en.md) · [Benchmarks](./doc/benchmarks.en.md) · [Changelog](./doc/changelog.en.md)
 
 ## 30-second start
 
+> **Security**: set a strong `API_KEY` in `.env` before exposing this on any network. Without it, anyone can delete your voiceprint library or trigger GPU jobs.
+
 ```bash
-git clone https://github.com/MapleEve/voscript.git
-cd voscript
-
-cp .env.example .env
-# edit .env — at minimum set HF_TOKEN and API_KEY
-
+git clone https://github.com/MapleEve/voscript.git && cd voscript
+cp .env.example .env        # at minimum: HF_TOKEN and API_KEY
 docker compose up -d --build
 curl -sf http://localhost:8780/healthz
 ```
 
-> **Security note**: set a strong `API_KEY` in `.env` before exposing this service on any network. All `/api/*` routes require Bearer or `X-API-Key` authentication when `API_KEY` is configured.
-
-Full steps + troubleshooting in [`doc/quickstart.en.md`](./doc/quickstart.en.md).
+Full setup + troubleshooting → [`doc/quickstart.en.md`](./doc/quickstart.en.md)
 
 ## Features
 
-- **Async job pipeline**: `queued → converting → denoising (optional) → transcribing → identifying → completed`
-- **Chinese + multilingual transcription** (WhisperX + faster-whisper large-v3, **word-level timestamps** via forced alignment; omit `language` to auto-detect — Mandarin audio outputs Simplified Chinese)
-- **Speaker diarization** (pyannote 3.1) + **WeSpeaker ResNet34** embeddings
-- **Adaptive voiceprint threshold**: `VOICEPRINT_THRESHOLD` (default 0.75) is the base; the actual threshold relaxes per-speaker based on intra-cluster std of enrolled embeddings — fixed −0.05 for 1 sample, `min(3×std, 0.10)` for 2+, floor at 0.60. Lifted recall from 50% to 70% on 10 real recordings with zero false positives
-- **Optional denoising with SNR gate**: `DENOISE_MODEL` (`none` | `deepfilternet` | `noisereduce`); `DENOISE_SNR_THRESHOLD` (default 10.0 dB) — audio above this SNR is considered clean and skipped automatically, preventing DeepFilterNet from degrading already-clean recordings
-- **AS-norm voiceprint scoring**: at startup, automatically builds an impostor cohort from existing transcription embeddings and applies Adaptive Score Normalization — eliminates speaker-dependent baseline bias, ~15–30% relative EER improvement
-- **Persistent voiceprints**: enroll once, auto-match across future recordings. sqlite + sqlite-vec under the hood — top-k nearest-neighbour search scales to thousands of speakers
-- **File hash deduplication**: submitting the same file twice returns the existing result immediately, skipping Whisper GPU inference
-- **Stable HTTP contract**: `/api/transcribe`, `/api/jobs/{id}`, `/api/voiceprints*`, etc. — any HTTP client works
-- **Container runs as non-root**; all `/api/*` routes accept optional Bearer / `X-API-Key` auth (constant-time compare); uploads capped by `MAX_UPLOAD_BYTES`; voiceprint DB is concurrency-safe with atomic writes — full hardening list in [`doc/security.en.md`](./doc/security.en.md)
-- **Job state persistence**: completed transcriptions remain accessible via `GET /api/transcriptions/{id}` after restart; in-flight status written to `status.json`
-- **Layered architecture**: `app/` split into `config / api/routers / services / pipeline`; `main.py` is a ~160-line orchestration entry point only
-- **Path traversal protection**: `_safe_tr_dir()` + regex-validated `job_id` path params prevent directory traversal attacks
-- Minimal built-in web UI at `/` for manual testing
+- **Persistent voiceprint library** — enroll once, auto-match across all future recordings. sqlite + sqlite-vec under the hood, top-k nearest-neighbour search, scales to thousands of speakers
+- **AS-norm scoring** — builds an impostor cohort from existing transcription embeddings at startup; eliminates speaker-dependent baseline bias, ~15–30% relative EER improvement
+- **Adaptive threshold** — each speaker's match threshold relaxes dynamically based on enrollment variance; lifted recall from 50% to 70% on 10 real recordings with zero false positives
+- **Speaker cluster consolidation** — when diarization splits one person into multiple clusters, they're automatically merged to a single label
+- **Word-level timestamps** — WhisperX forced alignment, every word precisely timed
+- **Optional denoising with SNR gate** — DeepFilterNet / noisereduce; audio above the SNR threshold is treated as clean and skipped automatically (prevents degrading already-clean recordings)
+- **File hash deduplication** — submitting the same file twice returns the existing result immediately, no GPU re-run
+- **Job persistence** — completed transcriptions remain accessible after restart
+- **Ngram dedup** — `no_repeat_ngram_size` parameter suppresses repetitive filler words in the transcript
+- **Plain HTTP contract** — any client that can send multipart/form-data works, no framework lock-in
 
-## How to integrate
+Security: path traversal protection, non-root container, upload size cap, constant-time auth, atomic writes — full list in [`doc/security.en.md`](./doc/security.en.md)
 
-voscript is a plain HTTP service — no specific client is required. Anything
-that can send `multipart/form-data` works (curl, axios, requests, browser
-uploads, …).
+## Integration
 
-A typical integration — OpenPlaud(Maple), under Settings → Transcription:
+It's a plain HTTP service. Two config values and you're done:
 
-- **Private transcription base URL**: `http://<host>:8780`
-- **Private transcription API key**: the same `API_KEY` as in `.env`
+- **Transcription base URL**: `http://<host>:8780`
+- **API key**: the `API_KEY` you set in `.env`
 
-After that its worker routes every recording through this service. If
-you're writing your own client, the full contract + error table lives in
-[`doc/api.en.md`](./doc/api.en.md).
+[OpenPlaud(Maple)](https://github.com/MapleEve/openplaud) connects this way. Any other client works the same. Full API contract → [`doc/api.en.md`](./doc/api.en.md)
 
 ## Documentation
-
-All detailed docs live in [`doc/`](./doc/). Chinese is the default, every
-page has an English counterpart:
 
 | Topic | 中文 | English |
 | --- | --- | --- |
 | Quickstart | [quickstart.zh.md](./doc/quickstart.zh.md) | [quickstart.en.md](./doc/quickstart.en.md) |
 | API reference | [api.zh.md](./doc/api.zh.md) | [api.en.md](./doc/api.en.md) |
-| **Install guide for AI agents** | [ai-install.zh.md](./doc/ai-install.zh.md) | [ai-install.en.md](./doc/ai-install.en.md) |
-| **Usage guide for AI agents** | [ai-usage.zh.md](./doc/ai-usage.zh.md) | [ai-usage.en.md](./doc/ai-usage.en.md) |
+| Install guide for AI agents | [ai-install.zh.md](./doc/ai-install.zh.md) | [ai-install.en.md](./doc/ai-install.en.md) |
+| Usage guide for AI agents | [ai-usage.zh.md](./doc/ai-usage.zh.md) | [ai-usage.en.md](./doc/ai-usage.en.md) |
 | Security policy | [security.zh.md](./doc/security.zh.md) | [security.en.md](./doc/security.en.md) |
-| Benchmarks (real-audio wall clock + resource usage) | [benchmarks.zh.md](./doc/benchmarks.zh.md) | [benchmarks.en.md](./doc/benchmarks.en.md) |
+| Benchmarks | [benchmarks.zh.md](./doc/benchmarks.zh.md) | [benchmarks.en.md](./doc/benchmarks.en.md) |
 | Changelog | [changelog.zh.md](./doc/changelog.zh.md) | [changelog.en.md](./doc/changelog.en.md) |
-
-First-time deployers: start with the [Quickstart](./doc/quickstart.en.md).
-AI agents integrating the API: read the [AI usage guide](./doc/ai-usage.en.md).
-AI agents deploying the service for a user: read the
-[AI install guide](./doc/ai-install.en.md).
 
 ## Contributing
 
-PRs welcome — please read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
+PRs welcome — read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
 
 ## Star History
 
@@ -104,4 +89,4 @@ PRs welcome — please read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
 
 ## License
 
-Apache 2.0 — see [LICENSE](./LICENSE).
+Apache 2.0 — [LICENSE](./LICENSE)
