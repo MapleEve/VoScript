@@ -140,7 +140,9 @@ async def transcribe(
 
 
 @router.get("/jobs/{job_id}")
-async def get_job(job_id: str):
+async def get_job(
+    job_id: Annotated[str, FPath(pattern=r"^tr_[A-Za-z0-9_-]{1,64}$")],
+):
     if job_id in jobs:
         job = jobs[job_id]
         resp = {"id": job_id, "status": job["status"], "filename": job.get("filename")}
@@ -198,6 +200,8 @@ async def get_job(job_id: str):
 async def list_transcriptions():
     results = []
     for tr_dir in sorted(TRANSCRIPTIONS_DIR.iterdir(), reverse=True):
+        if not tr_dir.is_dir():
+            continue
         result_file = tr_dir / "result.json"
         if result_file.exists():
             data = json.loads(result_file.read_text(encoding="utf-8"))
@@ -283,7 +287,7 @@ async def export_transcription(
         return PlainTextResponse(
             "\n".join(lines),
             media_type="text/srt",
-            headers={"Content-Disposition": f"attachment; filename={tr_id}.srt"},
+            headers={"Content-Disposition": f'attachment; filename="{tr_id}.srt"'},
         )
     elif format == "txt":
         lines = []
@@ -293,7 +297,7 @@ async def export_transcription(
         return PlainTextResponse(
             "\n".join(lines),
             media_type="text/plain",
-            headers={"Content-Disposition": f"attachment; filename={tr_id}.txt"},
+            headers={"Content-Disposition": f'attachment; filename="{tr_id}.txt"'},
         )
     elif format == "json":
         return FileResponse(

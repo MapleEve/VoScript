@@ -7,7 +7,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 
-from api.deps import get_db, get_pipeline, verify_api_key
+from api.deps import get_db, verify_api_key
 from config import TRANSCRIPTIONS_DIR
 from services.audio_service import safe_speaker_label, safe_tr_dir
 

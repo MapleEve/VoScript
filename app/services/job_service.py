@@ -35,20 +35,24 @@ _cohort_rebuild_counter: dict = {}
 # ---------------------------------------------------------------------------
 
 
-def _write_status(job_id: str, status: str, error: str | None = None) -> None:
+def _write_status(
+    job_id: str,
+    status: str,
+    error: str | None = None,
+    filename: str | None = None,
+) -> None:
     """Write job status to disk for persistence across process restarts."""
     status_path = TRANSCRIPTIONS_DIR / job_id / "status.json"
     status_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        status_path.write_text(
-            json.dumps(
-                {
-                    "status": status,
-                    "updated_at": datetime.now().isoformat(),
-                    "error": error,
-                }
-            )
-        )
+        payload = {
+            "status": status,
+            "updated_at": datetime.now().isoformat(),
+            "error": error,
+        }
+        if filename is not None:
+            payload["filename"] = filename
+        status_path.write_text(json.dumps(payload))
     except Exception as exc:
         logger.warning("Failed to write status.json for %s: %s", job_id, exc)
 
@@ -148,7 +152,7 @@ def run_transcription(
     """
     try:
         jobs[job_id]["status"] = "converting"
-        _write_status(job_id, "converting")
+        _write_status(job_id, "converting", filename=audio_path.name)
         wav_path = convert_to_wav(audio_path)
 
         jobs[job_id]["status"] = "queued"
@@ -294,15 +298,11 @@ def run_transcription(
         # requiring a server restart.
         try:
             _cohort_rebuild_counter[0] = _cohort_rebuild_counter.get(0, 0) + 1
-            if voiceprint_db._asnorm is None or _cohort_rebuild_counter[0] % 10 == 0:
+            if voiceprint_db.cohort_size == 0 or _cohort_rebuild_counter[0] % 10 == 0:
                 voiceprint_db.build_cohort_from_transcriptions(str(TRANSCRIPTIONS_DIR))
-                cohort_size = (
-                    len(voiceprint_db._asnorm._cohort)
-                    if voiceprint_db._asnorm is not None
-                    and hasattr(voiceprint_db._asnorm, "_cohort")
-                    else 0
+                logger.info(
+                    "AS-norm cohort rebuilt: size=%d", voiceprint_db.cohort_size
                 )
-                logger.info("AS-norm cohort rebuilt: size=%d", cohort_size)
         except Exception as exc:
             logger.warning("cohort rebuild failed: %s", exc)
 

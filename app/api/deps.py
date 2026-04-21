@@ -5,7 +5,7 @@ import hmac
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from config import API_KEY, ALLOW_NO_AUTH
+from config import API_KEY
 
 
 async def verify_api_key(x_api_key: str | None = Header(None)) -> None:

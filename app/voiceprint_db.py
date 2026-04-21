@@ -135,6 +135,17 @@ class VoiceprintDB:
         self._maybe_migrate_legacy()
 
     # ------------------------------------------------------------------
+    # Public properties
+    # ------------------------------------------------------------------
+
+    @property
+    def cohort_size(self) -> int:
+        """Return current AS-norm cohort size (0 if not built)."""
+        if self._asnorm is None:
+            return 0
+        return len(self._asnorm._cohort) if hasattr(self._asnorm, "_cohort") else 0
+
+    # ------------------------------------------------------------------
     # Connection / schema helpers
     # ------------------------------------------------------------------
 
@@ -536,15 +547,15 @@ class VoiceprintDB:
                     # API), otherwise pack explicitly as little-endian float32.
                     try:
                         import sqlite_vec as _sv
+
                         _vec_bytes = _sv.serialize_float32(
                             query.astype(np.float32).flatten().tolist()
                         )
                     except (ImportError, AttributeError):
                         import struct as _struct
+
                         _qflat = query.astype(np.float32).flatten()
-                        _vec_bytes = _struct.pack(
-                            f"<{len(_qflat)}f", *_qflat
-                        )
+                        _vec_bytes = _struct.pack(f"<{len(_qflat)}f", *_qflat)
                     row = self._conn.execute(
                         "SELECT speaker_id, distance FROM speaker_vecs "
                         "WHERE avg_emb MATCH ? AND k = 1",
