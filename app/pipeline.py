@@ -31,8 +31,6 @@ class TranscriptionPipeline:
         self._whisper = None
         self._diarization = None
         self._embedding_model = None
-        self._osd = None
-        self._osd_onset = 0.5
 
     @property
     def whisper(self):
@@ -105,104 +103,6 @@ class TranscriptionPipeline:
             # exactly what we need for per-turn embeddings.
             self._embedding_model = Inference(model, window="whole")
         return self._embedding_model
-
-    @property
-    def osd_pipeline(self):
-        """Lazy-load pyannote OverlappedSpeechDetection pipeline."""
-        if self._osd is None:
-            from pyannote.audio import Pipeline as PyannotePipeline
-
-            logger.info("Loading pyannote OverlappedSpeechDetection")
-            self._osd = PyannotePipeline.from_pretrained(
-                "pyannote/overlapped-speech-detection",
-                use_auth_token=self.hf_token,
-            )
-            if self.device.startswith("cuda"):
-                import torch
-
-                _dev = self.device if ":" in self.device else "cuda:0"
-                self._osd.to(torch.device(_dev))
-            self._osd_onset = None  # force onset to be set fresh
-        return self._osd
-
-    def detect_overlaps(self, audio_path: str, onset: float = 0.5) -> dict:
-        """Detect overlapped speech regions using pyannote OSD.
-
-        Returns dict with keys:
-          intervals   — list of [start, end] pairs (seconds)
-          total_s     — total audio duration (seconds)
-          overlap_s   — total overlapped duration (seconds)
-          ratio       — overlap_s / total_s (0–1)
-          count       — number of distinct overlap intervals
-        """
-        import torchaudio
-
-        # Invalidate cached pipeline when onset changes
-        if self._osd is not None and self._osd_onset != onset:
-            self._osd = None
-
-        osd = self.osd_pipeline
-        self._osd_onset = onset
-
-        # Load audio duration
-        info = torchaudio.info(audio_path)
-        total_s = round(info.num_frames / info.sample_rate, 3)
-
-        audio_input = {"audio": audio_path, "sample_rate": info.sample_rate}
-        try:
-            annotation = osd(audio_input, onset=onset)
-        except TypeError:
-            # Some pyannote versions don't accept onset keyword
-            annotation = osd(audio_input)
-
-        intervals = []
-        overlap_s = 0.0
-        for seg, _, _ in annotation.itertracks(yield_label=True):
-            dur = seg.end - seg.start
-            intervals.append([round(seg.start, 3), round(seg.end, 3)])
-            overlap_s += dur
-
-        overlap_s = round(overlap_s, 3)
-        ratio = round(overlap_s / total_s, 4) if total_s > 0 else 0.0
-
-        return {
-            "intervals": intervals,
-            "total_s": total_s,
-            "overlap_s": overlap_s,
-            "ratio": ratio,
-            "count": len(intervals),
-        }
-
-    def separate_overlaps(self, audio_path: str, n_speakers: int = 2) -> list[str]:
-        """Separate overlapped speech into N mono tracks using MossFormer2 via clearvoice.
-
-        Returns list of file paths (str), one per speaker track.
-        Requires: pip install clearvoice
-        """
-        import tempfile
-        import glob as _glob
-        from pathlib import Path
-
-        from clearvoice import ClearVoice
-
-        audio_path = str(audio_path)
-        out_dir = tempfile.mkdtemp(prefix="voscript_sep_")
-
-        cv = ClearVoice(
-            task="speech_separation",
-            model_names=["MossFormer2_SS_16K"],
-        )
-        cv(input_path=audio_path, online_write=False, output_path=out_dir)
-
-        stem = Path(audio_path).stem
-        pattern = str(Path(out_dir) / f"{stem}_*_spk*.wav")
-        tracks = sorted(_glob.glob(pattern))
-
-        if not tracks:
-            # Fallback: return any wav files in the output dir
-            tracks = sorted(_glob.glob(str(Path(out_dir) / "*.wav")))
-
-        return [str(t) for t in tracks]
 
     def transcribe(self, audio_path: str, language: str = None) -> dict:
         """Run faster-whisper and return a whisperx-compatible result dict.

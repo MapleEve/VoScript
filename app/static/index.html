@@ -222,15 +222,7 @@
             <option value="deepfilternet">DeepFilterNet</option>
           </select>
         </div>
-        <!-- Row 2: OSD -->
-        <div class="sm:col-span-2">
-          <label class="block text-xs font-medium text-muted-foreground mb-1.5">重叠语音检测 (OSD)</label>
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" id="opt-osd" class="accent-primary w-4 h-4">
-            <span class="text-sm">启用</span>
-          </label>
-        </div>
-        <div class="sm:col-span-3 flex justify-end gap-2 items-end">
+        <div class="sm:col-span-5 flex justify-end gap-2">
           <button class="btn-ghost" onclick="resetUpload()">取消</button>
           <button class="btn-default" onclick="startTranscribe()">开始转录</button>
         </div>
@@ -287,7 +279,6 @@
           </div>
         </div>
 
-        <div id="osd-stats-banner" class="hidden mb-3 px-3 py-2 rounded bg-amber-50 dark:bg-amber-900/20 text-xs text-amber-700 dark:text-amber-300"></div>
         <div id="speaker-legend" class="flex flex-wrap gap-1.5 mb-4"></div>
         <div id="segments-list" class="space-y-0.5 max-h-[60vh] overflow-y-auto scroll-slim pr-2"></div>
       </div>
@@ -571,10 +562,6 @@
     form.append('max_speakers', document.getElementById('opt-max-spk').value);
     const denoiseVal = document.getElementById('opt-denoise').value;
     if (denoiseVal) form.append('denoise_model', denoiseVal);
-    if (document.getElementById('opt-osd').checked) {
-      form.append('osd', 'true');
-      form.append('osd_onset', '0.08');
-    }
     document.getElementById('progress-panel').classList.remove('hidden');
     document.getElementById('result-panel').classList.add('hidden');
     document.getElementById('progress-text').textContent = '上传中';
@@ -647,17 +634,6 @@
       document.getElementById('job-params-panel').classList.remove('hidden');
     }
 
-    // Overlap stats banner
-    const osd = result.overlap_stats;
-    const osdBanner = document.getElementById('osd-stats-banner');
-    if (osd && osd.ratio > 0) {
-      const pct = (osd.ratio * 100).toFixed(1);
-      osdBanner.innerHTML = `<span>⚡ 重叠语音：<strong>${pct}%</strong>（${osd.overlap_s.toFixed(1)}s / ${osd.total_s.toFixed(1)}s，共 ${osd.count} 段）</span>`;
-      osdBanner.classList.remove('hidden');
-    } else {
-      osdBanner.classList.add('hidden');
-    }
-
     // map every distinct speaker_label to a color idx
     const labels = [...new Set(result.segments.map(s => s.speaker_label))];
     const colorMap = {};
@@ -689,14 +665,10 @@
     const list = document.getElementById('segments-list');
     list.innerHTML = result.segments.map(seg => {
       const ci = colorMap[seg.speaker_label];
-      const overlapBadge = seg.has_overlap
-        ? `<span class="px-1.5 py-px rounded text-[10px] bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="检测到重叠语音">⚡ 重叠</span>`
-        : '';
       return `<div class="spk-${ci} spk-border border-l-2 pl-3 py-2 hover:bg-accent/30 rounded-sm transition-colors">
         <div class="flex items-center gap-2 text-xs text-muted-foreground mb-0.5 flex-wrap">
           <span>${formatTime(seg.start)} – ${formatTime(seg.end)}</span>
           <span class="spk-${ci} spk-badge px-1.5 py-px rounded text-[10px]">${escapeHtml(seg.speaker_name || seg.speaker_label)}</span>
-          ${overlapBadge}
         </div>
         <p class="text-sm leading-relaxed">${escapeHtml(seg.text || '')}</p>
       </div>`;
