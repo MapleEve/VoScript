@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import uuid
 import logging
@@ -28,6 +29,19 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+_CTRL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _safe_log_filename(name: str | None) -> str:
+    """Strip control chars (incl. CR/LF, ANSI escapes) from user-supplied names
+    before writing them to logs, so attackers can't inject fake log lines.
+    """
+    if not name:
+        return ""
+    return _CTRL_CHAR_RE.sub("?", name)
+
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 TRANSCRIPTIONS_DIR = DATA_DIR / "transcriptions"
@@ -213,6 +227,16 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-XSS-Protection", "1; mode=block")
+    return response
 
 
 @app.middleware("http")
@@ -539,6 +563,9 @@ async def transcribe(
     job_id = f"tr_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
 
     safe_filename = PurePosixPath(file.filename or "upload").name or "upload"
+    # Strip control chars before using the name in paths/logs — PurePosixPath.name
+    # preserves newlines and ANSI escapes which would otherwise enable log injection.
+    safe_filename = _safe_log_filename(safe_filename) or "upload"
     save_path = UPLOADS_DIR / f"{job_id}_{safe_filename}"
 
     size = 0
