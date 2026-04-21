@@ -153,6 +153,38 @@ def compute_file_hash(path: Path) -> str:
     return sha256.hexdigest()
 
 
+async def save_upload_and_hash(
+    file, save_path: Path, max_bytes: int, chunk_size: int
+) -> tuple[int, str]:
+    """Save an uploaded UploadFile to *save_path* using async I/O and compute
+    its SHA-256 digest on the fly, avoiding a second full-file read.
+
+    Returns (total_bytes_written, hex_digest).
+
+    Raises ValueError when the upload exceeds *max_bytes* — the caller is
+    responsible for unlinking *save_path* and returning HTTP 413.
+
+    PERF-C2: replaces the former synchronous open()+write() loop and the
+    separate compute_file_hash() call, both of which blocked the asyncio
+    event loop for several seconds on large files.
+    """
+    import aiofiles
+
+    sha256 = hashlib.sha256()
+    size = 0
+    async with aiofiles.open(save_path, "wb") as f:
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                raise ValueError(f"Upload exceeds MAX_UPLOAD_BYTES ({max_bytes} bytes)")
+            await f.write(chunk)
+            sha256.update(chunk)
+    return size, sha256.hexdigest()
+
+
 def lookup_hash(file_hash: str) -> str | None:
     """Return existing tr_id if hash is already transcribed and result exists."""
 

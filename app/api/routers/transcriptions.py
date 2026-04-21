@@ -25,10 +25,10 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from api.deps import get_db, get_pipeline, verify_api_key
 from config import MAX_UPLOAD_BYTES, TRANSCRIPTIONS_DIR, UPLOAD_CHUNK, UPLOADS_DIR
 from services.audio_service import (
-    compute_file_hash,
     lookup_hash,
     safe_log_filename,
     safe_tr_dir,
+    save_upload_and_hash,
 )
 from services.job_service import jobs, run_transcription
 
@@ -92,24 +92,16 @@ async def transcribe(
     safe_filename = safe_log_filename(safe_filename) or "upload"
     save_path = UPLOADS_DIR / f"{job_id}_{safe_filename}"
 
-    size = 0
-    with open(save_path, "wb") as f:
-        while True:
-            chunk = file.file.read(UPLOAD_CHUNK)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
-                f.close()
-                save_path.unlink(missing_ok=True)
-                raise HTTPException(
-                    413,
-                    f"Upload exceeds MAX_UPLOAD_BYTES ({MAX_UPLOAD_BYTES} bytes)",
-                )
-            f.write(chunk)
+    # PERF-C2: async write + streaming SHA-256 — no event-loop blockage on large uploads.
+    try:
+        _size, file_hash = await save_upload_and_hash(
+            file, save_path, MAX_UPLOAD_BYTES, UPLOAD_CHUNK
+        )
+    except ValueError as exc:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(413, str(exc)) from exc
 
     # Dedup: if identical audio was already transcribed, return existing result.
-    file_hash = compute_file_hash(save_path)
     existing_id = lookup_hash(file_hash)
     if existing_id:
         save_path.unlink(missing_ok=True)
