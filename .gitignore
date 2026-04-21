@@ -36,5 +36,4 @@ tmp/
 # Code review intermediate artifacts
 .full-review/
 .full-review-archive/
-CLAUDE.md
 CLAUDE.local.md
