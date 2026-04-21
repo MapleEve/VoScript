@@ -377,6 +377,9 @@ def _run_transcription(
     denoise_model: str = None,
     snr_threshold: float = None,
     file_hash: str = None,
+    run_osd: bool = False,
+    osd_onset: float = 0.08,
+    run_separate: bool = False,
 ):
     """Background transcription worker."""
     try:
@@ -426,6 +429,55 @@ def _run_transcription(
         except Exception:
             pass
 
+        # --- OSD: overlapped speech detection ---
+        overlap_stats = None
+        overlap_intervals = []
+        if run_osd:
+            jobs[job_id]["status"] = "detecting_overlaps"
+            try:
+                overlap_data = pipeline.detect_overlaps(
+                    str(clean_path), onset=osd_onset
+                )
+                overlap_stats = {
+                    "total_s": overlap_data["total_s"],
+                    "overlap_s": overlap_data["overlap_s"],
+                    "ratio": overlap_data["ratio"],
+                    "count": overlap_data["count"],
+                }
+                overlap_intervals = overlap_data.get("intervals", [])
+                logger.info(
+                    "OSD: overlap_ratio=%.2f%% count=%d",
+                    overlap_data["ratio"] * 100,
+                    overlap_data["count"],
+                )
+            except Exception as e:
+                logger.warning("OSD failed: %s", e)
+
+        # --- Speech separation (Method B) ---
+        separated_tracks = []
+        if run_separate and run_osd and overlap_stats and overlap_stats["ratio"] > 0.0:
+            jobs[job_id]["status"] = "separating"
+            try:
+                track_paths = pipeline.separate_overlaps(str(clean_path), n_speakers=2)
+                for i, track_path in enumerate(track_paths):
+                    jobs[job_id]["status"] = f"transcribing_track_{i+1}"
+                    try:
+                        track_result = pipeline.transcribe(
+                            track_path, language=language
+                        )
+                        separated_tracks.append(
+                            {
+                                "track": i + 1,
+                                "audio_path": track_path,
+                                "segments": track_result.get("segments", []),
+                            }
+                        )
+                    except Exception as te:
+                        logger.warning("Track %d transcription failed: %s", i + 1, te)
+                logger.info("Separated %d tracks", len(separated_tracks))
+            except Exception as e:
+                logger.warning("Speech separation failed: %s", e)
+
         # Match speakers against voiceprint DB
         jobs[job_id]["status"] = "identifying"
         speaker_map = {}
@@ -460,6 +512,13 @@ def _run_transcription(
             # alignment failed — clients must treat the key as optional.
             if seg.get("words"):
                 out["words"] = seg["words"]
+            # Check if this segment overlaps with any detected overlap interval
+            seg_start = seg["start"]
+            seg_end = seg["end"]
+            has_overlap = any(
+                iv[0] < seg_end and iv[1] > seg_start for iv in overlap_intervals
+            )
+            out["has_overlap"] = has_overlap
             segments.append(out)
 
         # Save transcription result
@@ -483,8 +542,16 @@ def _run_transcription(
                 "voiceprint_threshold": VOICEPRINT_THRESHOLD,
                 "min_speakers": min_speakers,
                 "max_speakers": max_speakers,
+                "osd": run_osd,
+                "osd_onset": osd_onset if run_osd else None,
+                "separate_speech": run_separate,
             },
         }
+
+        if overlap_stats:
+            tr["overlap_stats"] = overlap_stats
+        if separated_tracks:
+            tr["separated_tracks"] = separated_tracks
 
         tr_dir = TRANSCRIPTIONS_DIR / job_id
         tr_dir.mkdir(exist_ok=True)
@@ -532,9 +599,15 @@ async def transcribe(
     max_speakers: int = Form(0),
     denoise_model: str = Form("none"),
     snr_threshold: float = Form(None),
+    osd: str = Form("false"),
+    osd_onset: float = Form(0.08),
+    separate_speech: str = Form("false"),
 ):
     # Normalise empty string to None so pipeline treats it as auto-detect.
     language = language.strip() if language else None
+
+    run_osd = osd.strip().lower() in ("true", "1", "yes")
+    run_separate = separate_speech.strip().lower() in ("true", "1", "yes")
 
     job_id = f"tr_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
 
@@ -583,6 +656,9 @@ async def transcribe(
             denoise_model,
             snr_threshold,
             file_hash,
+            run_osd,
+            osd_onset,
+            run_separate,
         ),
     )
     thread.start()
