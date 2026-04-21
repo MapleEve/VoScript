@@ -581,7 +581,7 @@
   }
 
   function pollStatus() {
-    clearInterval(pollTimer);
+    clearTimeout(pollTimer);
     const statusMap = {
       queued: '排队中',
       converting: '转换音频格式',
@@ -590,24 +590,36 @@
       completed: '完成',
       failed: '失败',
     };
-    pollTimer = setInterval(async () => {
-      try {
-        const resp = await apiFetch(`/api/jobs/${currentJobId}`);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        document.getElementById('progress-text').textContent = statusMap[data.status] || data.status;
-        document.getElementById('progress-detail').textContent = `job: ${data.id}`;
-        if (data.status === 'completed') {
-          clearInterval(pollTimer);
-          document.getElementById('progress-panel').classList.add('hidden');
-          showResult(data.result);
-        } else if (data.status === 'failed') {
-          clearInterval(pollTimer);
-          document.getElementById('progress-text').textContent = '失败';
-          document.getElementById('progress-detail').textContent = data.error || 'unknown error';
+    const POLL_MIN = 2000, POLL_MAX = 10000, POLL_GROW = 1.5;
+    const schedulePoll = (interval) => {
+      pollTimer = setTimeout(async () => {
+        let keepPolling = true;
+        try {
+          const resp = await apiFetch(`/api/jobs/${currentJobId}`);
+          if (!resp.ok) {
+            // Transient server hiccup — keep polling at the current interval
+            schedulePoll(Math.min(interval * POLL_GROW, POLL_MAX));
+            return;
+          }
+          const data = await resp.json();
+          document.getElementById('progress-text').textContent = statusMap[data.status] || data.status;
+          document.getElementById('progress-detail').textContent = `job: ${data.id}`;
+          if (data.status === 'completed') {
+            keepPolling = false;
+            document.getElementById('progress-panel').classList.add('hidden');
+            showResult(data.result);
+          } else if (data.status === 'failed') {
+            keepPolling = false;
+            document.getElementById('progress-text').textContent = '失败';
+            document.getElementById('progress-detail').textContent = data.error || 'unknown error';
+          }
+        } catch (e) {
+          // Network error — back off, don't spam
         }
-      } catch (e) { /* ignore */ }
-    }, 2000);
+        if (keepPolling) schedulePoll(Math.min(interval * POLL_GROW, POLL_MAX));
+      }, interval);
+    };
+    schedulePoll(POLL_MIN);
   }
 
   /* ========== result rendering ========== */
@@ -713,9 +725,17 @@
     form.append('speaker_label', label);
     form.append('speaker_name', name);
     if (existingId) form.append('speaker_id', existingId);
-    const resp = await apiFetch('/api/voiceprints/enroll', { method: 'POST', body: form });
+    let resp;
+    try {
+      resp = await apiFetch('/api/voiceprints/enroll', { method: 'POST', body: form });
+    } catch (e) {
+      toast('登记失败：网络错误', 'error');
+      return;
+    }
     if (!resp.ok) {
-      toast('登记失败：' + ((await resp.json()).detail || resp.statusText), 'error');
+      let detail = resp.statusText;
+      try { detail = (await resp.json()).detail || detail; } catch {}
+      toast(`登记失败 (${resp.status}): ${detail}`, 'error');
       return;
     }
     const data = await resp.json();
@@ -724,8 +744,20 @@
 
   /* ========== history ========== */
   async function loadHistory() {
-    const resp = await apiFetch('/api/transcriptions');
-    if (!resp.ok) return;
+    let resp;
+    try {
+      resp = await apiFetch('/api/transcriptions');
+    } catch (e) {
+      toast('加载历史失败：网络错误', 'error');
+      return;
+    }
+    if (!resp.ok) {
+      // 401/413 already toasted by apiFetch — only report other errors
+      if (resp.status !== 401 && resp.status !== 413) {
+        toast(`加载历史失败 (${resp.status})`, 'error');
+      }
+      return;
+    }
     const list = await resp.json();
     const el = document.getElementById('history-list');
     const empty = document.getElementById('history-empty');
@@ -751,8 +783,19 @@
   }
 
   async function loadTranscription(trId) {
-    const resp = await apiFetch(`/api/transcriptions/${trId}`);
-    if (!resp.ok) return;
+    let resp;
+    try {
+      resp = await apiFetch(`/api/transcriptions/${trId}`);
+    } catch (e) {
+      toast('加载转录失败：网络错误', 'error');
+      return;
+    }
+    if (!resp.ok) {
+      if (resp.status !== 401 && resp.status !== 413) {
+        toast(`加载转录失败 (${resp.status})`, 'error');
+      }
+      return;
+    }
     const data = await resp.json();
     showTab('transcribe');
     showResult(data);
@@ -760,8 +803,19 @@
 
   /* ========== voiceprints ========== */
   async function loadVoiceprints() {
-    const resp = await apiFetch('/api/voiceprints');
-    if (!resp.ok) return;
+    let resp;
+    try {
+      resp = await apiFetch('/api/voiceprints');
+    } catch (e) {
+      toast('加载声纹库失败：网络错误', 'error');
+      return;
+    }
+    if (!resp.ok) {
+      if (resp.status !== 401 && resp.status !== 413) {
+        toast(`加载声纹库失败 (${resp.status})`, 'error');
+      }
+      return;
+    }
     const list = await resp.json();
     const el = document.getElementById('vp-list');
     const empty = document.getElementById('vp-empty');
@@ -797,15 +851,21 @@
     if (!name) return;
     const form = new FormData();
     form.append('name', name);
-    const resp = await apiFetch(`/api/voiceprints/${id}/name`, { method: 'PUT', body: form });
-    if (!resp.ok) { toast('重命名失败', 'error'); return; }
+    let resp;
+    try {
+      resp = await apiFetch(`/api/voiceprints/${id}/name`, { method: 'PUT', body: form });
+    } catch (e) { toast('重命名失败：网络错误', 'error'); return; }
+    if (!resp.ok) { toast(`重命名失败 (${resp.status})`, 'error'); return; }
     toast('已重命名', 'success');
     loadVoiceprints();
   }
   async function deleteVp(id, name) {
     if (!confirm(`确定删除声纹 "${name}"？之后这个人就不会被自动识别了。`)) return;
-    const resp = await apiFetch(`/api/voiceprints/${id}`, { method: 'DELETE' });
-    if (!resp.ok) { toast('删除失败', 'error'); return; }
+    let resp;
+    try {
+      resp = await apiFetch(`/api/voiceprints/${id}`, { method: 'DELETE' });
+    } catch (e) { toast('删除失败：网络错误', 'error'); return; }
+    if (!resp.ok) { toast(`删除失败 (${resp.status})`, 'error'); return; }
     toast('已删除', 'success');
     loadVoiceprints();
   }
