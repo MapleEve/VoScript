@@ -3,9 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' cdn.tailwindcss.com; script-src 'self' 'unsafe-inline' cdn.tailwindcss.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';">
 <title>voscript</title>
 <link rel="icon" href="data:,">
+<!-- Tailwind CDN (development/prototype use only).
+     SRI is not applicable: cdn.tailwindcss.com generates dynamic bundles per request.
+     Production path: npx tailwindcss -o app/static/tailwind.css --minify
+     then replace this script tag with <link rel="stylesheet" href="/static/tailwind.css">. -->
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
   tailwind.config = {
@@ -337,7 +341,7 @@
     <div class="flex items-center justify-between">
       <div>
         <h2 class="font-semibold">设置</h2>
-        <p class="text-xs text-muted-foreground">保存在此浏览器的 localStorage 里</p>
+        <p class="text-xs text-muted-foreground">保存在此浏览器的 sessionStorage 里（关闭标签页后自动清除）</p>
       </div>
       <button class="btn-ghost btn-icon" onclick="closeSettings()" title="关闭">
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -394,9 +398,27 @@
 <script>
   const STORAGE_KEY = 'voscript.apiKey';
 
-  /* ========== key state ========== */
-  function getKey() { return localStorage.getItem(STORAGE_KEY) || ''; }
-  function setKey(v) { v ? localStorage.setItem(STORAGE_KEY, v) : localStorage.removeItem(STORAGE_KEY); }
+  /* ========== key state ==========
+   * SEC-H3: API key is kept in memory (highest priority) + sessionStorage as
+   * a fallback across same-tab navigation.  sessionStorage is scoped to the
+   * tab and is automatically cleared when the tab is closed, reducing the
+   * window of exposure compared with localStorage.
+   * Note: HttpOnly cookies (server-side) would be the ideal storage; this is
+   * the best available mitigation without a backend change. */
+  let _apiKeyMemory = '';
+
+  function getKey() {
+    return _apiKeyMemory || sessionStorage.getItem(STORAGE_KEY) || '';
+  }
+  function setKey(v) {
+    _apiKeyMemory = v || '';
+    if (v) {
+      sessionStorage.setItem(STORAGE_KEY, v);
+    } else {
+      sessionStorage.removeItem(STORAGE_KEY);
+      _apiKeyMemory = '';
+    }
+  }
 
   function setKeyIndicator(state) {
     // state ∈ 'ok' (green) | 'invalid' (red) | 'empty' (amber) | 'unknown' (zinc)
