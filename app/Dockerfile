@@ -28,9 +28,6 @@ RUN if [ -n "$APT_MIRROR" ]; then \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsndfile1 \
-    git \
-    # TODO: 待确认 fake_git hack 删除后可移除此依赖（评审 BP-L5）。
-    # DeepFilterNet 在初始化时可能探测 `git`，若已完全去除该 hack，可删除此行。
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root runtime user. An RCE inside the container only owns the service's

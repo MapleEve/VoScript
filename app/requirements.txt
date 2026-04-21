@@ -1,7 +1,6 @@
-# Pin torch to base image versions - DO NOT let pyannote upgrade
-torch==2.4.1
-torchaudio==2.4.1
-torchvision==0.19.1
+# torch/torchaudio/torchvision are provided by the base image
+# (pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime) — do NOT add them here.
+# pip would re-install them and double the image size (~1-2 GB wasted).
 # pyannote 3.1.1 works with torch 2.4.x (no torch>=2.8 requirement)
 pyannote.audio==3.1.1
 faster-whisper>=1.1.0
