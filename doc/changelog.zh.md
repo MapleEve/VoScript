@@ -17,6 +17,10 @@
 - **`speaker_id` 输入校验**：`POST /api/voiceprints/enroll` 的 `speaker_id` Form 字段新增格式校验（`^spk_[A-Za-z0-9_-]{1,64}$`），与路径参数端点保持一致；不合法格式返回 422。
 - **pip-audit 硬门控**：CI 安全扫描移除 `|| echo`，漏洞检测失败时真正阻断构建。
 - **CQ-C1 计数器移除**：移除 `job_service.py` 中每 10 次转录触发重建的旧机制，避免与守护线程并发重建。
+- **并发去重保护**：新增 `_in_flight_hashes` 字典，防止内容完全相同的并发上传各自启动转录任务；第二个请求直接返回第一个任务的 ID，不重跑 GPU。
+- **持久化窗口彻底关闭**：`register_in_flight` 现在在 `_write_status` 成功后才调用，保证任何通过并发去重路径拿到 job_id 的调用方都能在磁盘上找到对应的 `status.json`。若初始 `status.json` 写入失败，接口在注册任何 in-flight 记录前就以 `503` 终止请求。`_write_status` 返回值改为 `bool`，方便调用方检测写入失败。
+- **Segment 说话人改写语义收紧**：`PUT /api/transcriptions/{tr_id}/segments/{seg_id}/speaker` 新增 `speaker_id` 格式校验（`^spk_[A-Za-z0-9_-]{1,64}$`，格式不合规返回 422）及数据库存在性校验（声纹不存在返回 404）。省略 `speaker_id` 时，旧值会被显式置为 `null`。该接口不修改 `speaker_map`（`speaker_map` 记录分离模型匹配结果，不受人工纠错影响）；每次编辑后 `unique_speakers` 从全部 segment 重新计算。
+- **CI 单测门控**：CI 命令改为 `pytest tests/unit/ tests/test_security.py`，`test_job_service.py`、`test_main_lifespan.py`、`test_voiceprint_db.py` 现在都在 CI 门控范围内。
 
 ### 兼容性
 

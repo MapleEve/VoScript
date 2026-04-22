@@ -17,6 +17,10 @@
 - **`speaker_id` input validation**: `POST /api/voiceprints/enroll` now validates the `speaker_id` Form field against `^spk_[A-Za-z0-9_-]{1,64}$`, matching the path-parameter endpoints; invalid values return 422.
 - **pip-audit hard gate**: The `|| echo` fallback is removed from CI; audit failures now block the build.
 - **Removed legacy CQ-C1 counter**: The per-10-transcription cohort rebuild trigger in `job_service.py` has been removed; the daemon thread is the sole auto-rebuild path.
+- **In-flight concurrent dedup**: `_in_flight_hashes` dict prevents two concurrent requests with identical audio from both burning GPU time; the second caller is redirected to the first job's ID immediately without starting a new transcription.
+- **Durability window fully closed**: `register_in_flight` is now called *after* `_write_status` succeeds, guaranteeing concurrent duplicates always find a live `status.json` for the redirected job ID. If the initial `status.json` write fails, the endpoint aborts with `503` before any in-flight entry is registered. `_write_status` now returns `bool` to make the failure detectable.
+- **Segment speaker reassignment semantics hardened**: `PUT /api/transcriptions/{tr_id}/segments/{seg_id}/speaker` now validates `speaker_id` against `^spk_[A-Za-z0-9_-]{1,64}$` (422 on format error) and verifies the voiceprint exists in the DB (404 if not found). When `speaker_id` is omitted, any previously assigned `speaker_id` is explicitly cleared to `null`. `speaker_map` is never modified by this endpoint (it records diarization-model results); `unique_speakers` is recalculated from all segments after each edit.
+- **CI unit test gate**: `pytest tests/unit/ tests/test_security.py` replaces the old explicit file list — `test_job_service.py`, `test_main_lifespan.py`, and `test_voiceprint_db.py` are now gated by CI.
 
 ### Compatibility
 

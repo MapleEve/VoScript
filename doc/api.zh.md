@@ -284,15 +284,35 @@ AS-norm 评分。`POST /api/voiceprints/rebuild-cohort` 仍可用于立即强制
 
 ### `PUT /api/transcriptions/{tr_id}/segments/{seg_id}/speaker`
 
-改某一条 segment 的说话人归属，用于手工纠正。
+手工纠正单条 segment 的说话人归属。
 
-表单字段 `speaker_name`（必填）、`speaker_id`（选填）。
+表单字段：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `speaker_name` | ✅ | 新的说话人显示名 |
+| `speaker_id` | ❌ | 已登记声纹的 ID（格式：`^spk_[A-Za-z0-9_-]{1,64}$`）；省略时清除该 segment 原有的 `speaker_id` |
+
+行为说明：
+
+- **只更新目标 segment**，其他 segment 不受影响。
+- `speaker_map` **不会被修改**——它记录分离模型的声纹匹配结果，不随人工纠错变化。
+- `unique_speakers` 在编辑后从全部 segment 重新计算，保持与当前内容一致。
+- 省略 `speaker_id` 时，目标 segment 原有的 `speaker_id` 会被显式置为 `null`（防止过时声纹 ID 残留）。
+
+错误：
+
+- `422` — `speaker_id` 格式非法（不匹配 `^spk_[A-Za-z0-9_-]{1,64}$`）
+- `404` — `speaker_id` 在声纹库中不存在
+- `404` — `tr_id` 对应的转录不存在
+- `404` — `seg_id` 在该转录中不存在
 
 ## 错误返回
 
 | 状态码 | 原因 |
 | --- | --- |
 | 400 | 请求字段缺失或格式错误；job_id 格式非法（`^tr_[A-Za-z0-9_-]{1,64}$`）/ speaker_label 非法字符 / 路径穿越检测 |
+| 422 | 字段值类型或取值校验失败；`speaker_id` 格式不符合 `^spk_[A-Za-z0-9_-]{1,64}$`；`no_repeat_ngram_size` 传入非整数 |
 | 401 | 缺 API key / key 不对 |
 | 404 | tr_id / speaker_id / embedding 不存在 |
 | 413 | 上传超过 `MAX_UPLOAD_BYTES`（默认 2 GiB），详见 `/api/transcribe` |

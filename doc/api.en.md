@@ -273,13 +273,33 @@ not auto-match.
 
 Manually reassign a single segment to a different speaker.
 
-Form fields: `speaker_name` (required), `speaker_id` (optional).
+Form fields:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `speaker_name` | ✅ | New speaker display name |
+| `speaker_id` | ❌ | ID of a registered voiceprint (format: `^spk_[A-Za-z0-9_-]{1,64}$`); omitting this clears any previously assigned `speaker_id` on the segment |
+
+Behavior:
+
+- **Only the targeted segment is updated** — other segments are not affected.
+- `speaker_map` **is not modified** — it records the diarization model's voiceprint match result and is not affected by manual corrections.
+- `unique_speakers` is recalculated from all segments after each edit to reflect the latest corrections.
+- When `speaker_id` is omitted, any stale `speaker_id` on the target segment is explicitly cleared to `null`.
+
+Errors:
+
+- `422` — `speaker_id` format invalid (does not match `^spk_[A-Za-z0-9_-]{1,64}$`)
+- `404` — `speaker_id` not found in the voiceprint DB
+- `404` — `tr_id` transcription not found
+- `404` — `seg_id` not found in this transcription
 
 ## Error responses
 
 | Code | Meaning |
 | --- | --- |
 | 400 | Missing or invalid request field; illegal job_id format (`^tr_[A-Za-z0-9_-]{1,64}$`) / invalid characters in speaker_label / path traversal detected |
+| 422 | Field value fails type or value validation; `speaker_id` does not match `^spk_[A-Za-z0-9_-]{1,64}$`; `no_repeat_ngram_size` is not an integer |
 | 401 | Missing or wrong API key |
 | 404 | Unknown tr_id / speaker_id / missing embedding |
 | 413 | Upload exceeded `MAX_UPLOAD_BYTES` (default 2 GiB) — see `/api/transcribe` |
