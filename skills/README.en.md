@@ -62,7 +62,7 @@ npx voscript-skills --all
 **Specify an agent or directory:**
 
 ```bash
-npx voscript-skills --agent trae      # claude / trae / cursor / codex / gemini / hermes / openclaw / windsurf / cline / roo
+npx voscript-skills --agent trae      # claude / trae / cursor / codex / gemini / hermes / openclaw / windsurf / cline / roo / codebuddy / qwen
 npx voscript-skills --dir /custom/skills/path
 ```
 
@@ -96,6 +96,8 @@ After cloning, `~/.claude/skills/voscript-api/` is the skill directory.
 | Windsurf | `windsurf` | `~/.codeium/windsurf/skills/` | ✅ |
 | Cline | `cline` | `~/.cline/skills/` | ✅ |
 | Roo Code | `roo` | `~/.roo/skills/` | ✅ |
+| CodeBuddy (Tencent) | `codebuddy` | `~/.codebuddy/skills/` | ✅ |
+| Qwen Code (Alibaba) | `qwen` | `~/.qwen/skills/` | ✅ |
 | Other | — | use `--dir` flag | — |
 
 ---

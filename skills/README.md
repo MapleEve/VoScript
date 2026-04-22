@@ -62,7 +62,7 @@ npx voscript-skills --all
 **指定代理或目录：**
 
 ```bash
-npx voscript-skills --agent trae      # claude / trae / cursor / codex / gemini / hermes / openclaw / windsurf / cline / roo
+npx voscript-skills --agent trae      # claude / trae / cursor / codex / gemini / hermes / openclaw / windsurf / cline / roo / codebuddy / qwen
 npx voscript-skills --dir /custom/skills/path
 ```
 
@@ -96,6 +96,8 @@ git clone https://github.com/MapleEve/voscript-skills.git ~/.claude/skills/
 | Windsurf | `windsurf` | `~/.codeium/windsurf/skills/` | ✅ |
 | Cline | `cline` | `~/.cline/skills/` | ✅ |
 | Roo Code | `roo` | `~/.roo/skills/` | ✅ |
+| CodeBuddy (腾讯云) | `codebuddy` | `~/.codebuddy/skills/` | ✅ |
+| Qwen Code (通义) | `qwen` | `~/.qwen/skills/` | ✅ |
 | 其它 | — | 使用 `--dir` 指定 | — |
 
 ---
