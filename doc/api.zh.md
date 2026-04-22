@@ -315,6 +315,6 @@ embedding 加入 cohort；必须显式调用 `POST /api/voiceprints/rebuild-coho
 | `VoiceTranscribeClient.renameVoiceprint` | `PUT /api/voiceprints/{id}/name` |
 | `VoiceTranscribeClient.deleteVoiceprint` | `DELETE /api/voiceprints/{id}` |
 
-源码位置见 [BetterAINote 仓库](https://github.com/MapleEve/openplaud)下的
+源码位置见 [BetterAINote 仓库](https://github.com/MapleEve/BetterAINote)下的
 `src/lib/transcription/providers/voice-transcribe-provider.ts` 和
 `src/lib/voice-transcribe/client.ts`。

@@ -21,8 +21,9 @@
 
 <br>
 
-**Meeting recordings → transcripts with real speaker names.**<br>
-Self-hosted · GPU-powered · Enroll a voice once, recognized in every future recording.
+After the meeting, you want to know who said what — without manually replaying the recording.<br>
+Enroll a voice once, recognized automatically from then on. Your data stays on your server, not a cloud.<br>
+Full HTTP API — plug into any workflow or AI agent pipeline.
 
 <br>
 
@@ -71,7 +72,7 @@ Best for: occasional recordings, one-off transcription tasks, anyone who doesn't
 
 ### API integration — fully automated pipeline
 
-Point your tool at the service URL with an API Key, and recordings flow in, transcripts flow out. [BetterAINote](https://github.com/MapleEve/openplaud) connects this way. Any HTTP client works.
+Point your tool at the service URL with an API Key, and recordings flow in, transcripts flow out. [BetterAINote](https://github.com/MapleEve/BetterAINote) connects this way. Any HTTP client works.
 
 Best for: long-term use, teams with shared recordings, existing audio workflows.
 

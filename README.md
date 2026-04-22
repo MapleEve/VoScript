@@ -21,8 +21,9 @@
 
 <br>
 
-**会议录音 → 带真名说话人标签的逐字稿。**<br>
-自托管 · GPU 驱动 · 声音登记一次，所有录音永久识别。
+开完会，你想知道谁说了什么——不是手动回放对名字。<br>
+声音登记一次，之后每个人都被自动认出来。数据留在自己的服务器，不上云，不按分钟收费。<br>
+完整 HTTP 接口，可以接入任何工作流和 AI Agent。
 
 <br>
 
@@ -71,7 +72,7 @@ docker compose up -d --build
 
 ### 接入你的工具——全自动流水线
 
-配置服务地址和 API Key，录音自动发来转录，结果直接落进你的工作流。[BetterAINote](https://github.com/MapleEve/openplaud) 就是这样接的，其它客户端同理。
+配置服务地址和 API Key，录音自动发来转录，结果直接落进你的工作流。[BetterAINote](https://github.com/MapleEve/BetterAINote) 就是这样接的，其它客户端同理。
 
 适合：长期使用、团队共用、有现成录音工作流的场景。
 

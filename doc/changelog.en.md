@@ -284,7 +284,7 @@ independent penetration test.
 ## 0.1.0 — Initial public release
 
 - First public release of the private transcription backend used by
-  [BetterAINote](https://github.com/MapleEve/openplaud).
+  [BetterAINote](https://github.com/MapleEve/BetterAINote).
 - Async job pipeline: `queued → converting → transcribing → identifying → completed`.
 - faster-whisper `large-v3` + pyannote `3.1` + ECAPA-TDNN speaker embeddings.
 - Persistent voiceprint DB with cosine-similarity auto-match.

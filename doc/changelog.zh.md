@@ -251,7 +251,7 @@
 
 ## 0.1.0 — 首次公开发布
 
-- 首次公开发布 [BetterAINote](https://github.com/MapleEve/openplaud) 的私有转录后端。
+- 首次公开发布 [BetterAINote](https://github.com/MapleEve/BetterAINote) 的私有转录后端。
 - 异步任务流水线：`queued → converting → transcribing → identifying → completed`。
 - faster-whisper `large-v3` + pyannote `3.1` + ECAPA-TDNN 声纹提取。
 - 持久化声纹库，基于余弦相似度自动匹配。

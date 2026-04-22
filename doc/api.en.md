@@ -289,6 +289,6 @@ Body shape:
 | `VoiceTranscribeClient.renameVoiceprint` | `PUT /api/voiceprints/{id}/name` |
 | `VoiceTranscribeClient.deleteVoiceprint` | `DELETE /api/voiceprints/{id}` |
 
-Source files live in the [BetterAINote repo](https://github.com/MapleEve/openplaud)
+Source files live in the [BetterAINote repo](https://github.com/MapleEve/BetterAINote)
 under `src/lib/transcription/providers/voice-transcribe-provider.ts` and
 `src/lib/voice-transcribe/client.ts`.
