@@ -62,7 +62,7 @@ npx voscript-skills --all
 **指定代理或目录：**
 
 ```bash
-npx voscript-skills --agent trae
+npx voscript-skills --agent trae      # claude / trae / cursor / codex / gemini / hermes / openclaw / windsurf
 npx voscript-skills --dir /custom/skills/path
 ```
 
@@ -84,12 +84,17 @@ git clone https://github.com/MapleEve/voscript-skills.git ~/.claude/skills/
 
 ## 支持的代理
 
-| 代理 | 技能目录 | 自动检测 |
-| --- | --- | --- |
-| Claude Code | `~/.claude/skills/` | ✅ |
-| Trae | `~/.trae/context/skills/` | ✅ |
-| Cursor | `~/.cursor/rules/skills/` | ✅ |
-| 其它 | 使用 `--dir` 指定 | — |
+| 代理 | --agent | 技能目录 | 自动检测 |
+| --- | --- | --- | --- |
+| Claude Code | `claude` | `~/.claude/skills/` | ✅ |
+| Trae | `trae` | `~/.trae/context/skills/` | ✅ |
+| Cursor | `cursor` | `~/.cursor/rules/skills/` | ✅ |
+| OpenAI Codex CLI | `codex` | `~/.codex/skills/` | ✅ |
+| Gemini CLI | `gemini` | `~/.gemini/skills/` | ✅ |
+| Hermes | `hermes` | `~/.hermes/skills/` | ✅ |
+| OpenClaw | `openclaw` | `~/.openclaw/skills/` | ✅ |
+| Windsurf | `windsurf` | `~/.codeium/windsurf/skills/` | ✅ |
+| 其它 | — | 使用 `--dir` 指定 | — |
 
 ---
 

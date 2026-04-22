@@ -62,7 +62,7 @@ npx voscript-skills --all
 **Specify an agent or directory:**
 
 ```bash
-npx voscript-skills --agent trae
+npx voscript-skills --agent trae      # claude / trae / cursor / codex / gemini / hermes / openclaw / windsurf
 npx voscript-skills --dir /custom/skills/path
 ```
 
@@ -84,12 +84,17 @@ After cloning, `~/.claude/skills/voscript-api/` is the skill directory.
 
 ## Supported Agents
 
-| Agent | Skills directory | Auto-detected |
-| --- | --- | --- |
-| Claude Code | `~/.claude/skills/` | ✅ |
-| Trae | `~/.trae/context/skills/` | ✅ |
-| Cursor | `~/.cursor/rules/skills/` | ✅ |
-| Other | use `--dir` flag | — |
+| Agent | --agent | Skills directory | Auto-detected |
+| --- | --- | --- | --- |
+| Claude Code | `claude` | `~/.claude/skills/` | ✅ |
+| Trae | `trae` | `~/.trae/context/skills/` | ✅ |
+| Cursor | `cursor` | `~/.cursor/rules/skills/` | ✅ |
+| OpenAI Codex CLI | `codex` | `~/.codex/skills/` | ✅ |
+| Gemini CLI | `gemini` | `~/.gemini/skills/` | ✅ |
+| Hermes | `hermes` | `~/.hermes/skills/` | ✅ |
+| OpenClaw | `openclaw` | `~/.openclaw/skills/` | ✅ |
+| Windsurf | `windsurf` | `~/.codeium/windsurf/skills/` | ✅ |
+| Other | — | use `--dir` flag | — |
 
 ---
 
