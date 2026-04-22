@@ -11,6 +11,7 @@ Run:
 
 import os
 import re
+import struct
 import time
 import wave
 from datetime import datetime
@@ -1903,89 +1904,123 @@ class TestVoiceprintChain:
     # ------------------------------------------------------------------
 
     def test_asnorm_cohort_updated_after_enroll(self, server_url, real_transcription):
-        """Verify the full AS-norm update chain (TEST-E1).
+        """Verify the full AS-norm update chain by submitting a NEW transcription job.
 
-        Chain under test:
-          POST /api/voiceprints/enroll
-            → add_speaker() increments _cohort_generation  (generation dirty)
+        Real chain under test:
+          new audio upload (unique SHA256)
+            → POST /api/transcribe → new transcription job
+            → pyannote saves emb_SPEAKER_XX.npy files on disk
           POST /api/voiceprints/rebuild-cohort
-            → build_cohort_from_transcriptions() runs
-            → _asnorm is loaded with fresh embeddings
-          Assert cohort_size > 0  (proves _asnorm is non-null and has data)
+            → build_cohort_from_transcriptions() scans new .npy files
+            → _asnorm cohort grows
+          Assert cohort_size_after > baseline_cohort_size  (strictly greater)
 
-        Note: the daemon timer + debounce path (_cohort_generation != _cohort_built_gen
-        → maybe_rebuild_cohort → debounce → actual rebuild) is covered by unit tests
-        TEST-H1/H2/H3/H4/H5.  This E2E test covers the observable HTTP end of the
-        chain: that after enroll + forced rebuild the cohort is non-empty, which is
-        the only externally verifiable proof that _asnorm was updated.
+        The previous version of this test only enrolled a speaker from an existing
+        transcription and never submitted new audio, so the cohort never changed
+        and the assertion was trivially true. This version modifies real audio
+        bytes (WAV JUNK chunk or OGG trailer) to bypass SHA256-based dedup, then
+        verifies the cohort actually grew after the new job completes.
         """
+        import hashlib
+
         if real_transcription is None:
             pytest.skip("No real transcription available")
 
-        result = real_transcription["result"]
         tr_id = real_transcription["tr_id"]
 
-        # --- Step 1: baseline cohort size before enroll ---
+        # --- Step 1: baseline cohort size before new upload ---
         baseline_resp = _post("/api/voiceprints/rebuild-cohort", data={})
         assert (
             baseline_resp.status_code == 200
         ), f"rebuild-cohort baseline failed: {baseline_resp.status_code} {baseline_resp.text}"
-        baseline_body = baseline_resp.json()
-        baseline_cohort_size = baseline_body.get("cohort_size", 0)
-        if baseline_cohort_size == 0:
-            pytest.skip(
-                "Server has no transcription embeddings; AS-norm cohort cannot be built — "
-                "upload at least one real audio first"
+        baseline_cohort_size = baseline_resp.json().get("cohort_size", 0)
+
+        # --- Step 2: download original audio bytes from existing transcription ---
+        audio_resp = _get(f"/api/transcriptions/{tr_id}/audio")
+        assert (
+            audio_resp.status_code == 200
+        ), f"Failed to download audio for tr_id={tr_id}: {audio_resp.status_code} {audio_resp.text}"
+        original_bytes = audio_resp.content
+        assert (
+            original_bytes and len(original_bytes) > 0
+        ), f"Audio download returned empty bytes for tr_id={tr_id}"
+
+        # --- Step 3: determine format and modify bytes to produce a new SHA256 ---
+        if original_bytes[:4] == b"RIFF":
+            # WAV: append a JUNK chunk and fix up the RIFF size.
+            junk_payload = os.urandom(4)
+            junk_chunk = b"JUNK" + struct.pack("<I", 4) + junk_payload
+            # Current declared RIFF size (bytes 4..8, little-endian uint32).
+            old_riff_size = struct.unpack("<I", original_bytes[4:8])[0]
+            new_riff_size = old_riff_size + len(junk_chunk)
+            modified_bytes = (
+                original_bytes[:4]
+                + struct.pack("<I", new_riff_size)
+                + original_bytes[8:]
+                + junk_chunk
             )
-
-        # --- Step 2: enroll a speaker (marks _cohort_generation dirty) ---
-        speaker_map = result.get("speaker_map", {})
-        if speaker_map:
-            speaker_label = next(iter(speaker_map))
+            filename = "e2e_asnorm_new.wav"
+            mime_type = "audio/wav"
+        elif original_bytes[:4] == b"OggS":
+            modified_bytes = original_bytes + b"\x00\x00\x00\x00" + os.urandom(12)
+            filename = "e2e_asnorm_new.ogg"
+            mime_type = "audio/ogg"
         else:
-            segs = result.get("segments") or []
-            labels = [s.get("speaker_label") for s in segs if s.get("speaker_label")]
-            if not labels:
-                pytest.skip("No speaker embeddings in real_transcription")
-            speaker_label = labels[0]
+            modified_bytes = original_bytes + b"\x00\x00\x00\x00" + os.urandom(12)
+            filename = "e2e_asnorm_new.bin"
+            mime_type = "application/octet-stream"
 
-        unique_name = f"e2e_asnorm_chain_{int(time.time())}"
-        enroll_resp = _post(
-            "/api/voiceprints/enroll",
-            data={
-                "tr_id": tr_id,
-                "speaker_label": speaker_label,
-                "speaker_name": unique_name,
-            },
+        # --- Step 4: verify the SHA256 actually changed ---
+        original_hash = hashlib.sha256(original_bytes).hexdigest()
+        modified_hash = hashlib.sha256(modified_bytes).hexdigest()
+        assert original_hash != modified_hash, (
+            "SHA256 did not change after modification; "
+            "dedup bypass logic failed before upload was attempted."
         )
-        assert enroll_resp.status_code in (
+
+        # --- Step 5: upload the modified audio as a brand-new transcription job ---
+        upload_resp = requests.post(
+            BASE_URL + "/api/transcribe",
+            headers=_auth_headers(),
+            files={"file": (filename, modified_bytes, mime_type)},
+            data={},
+            proxies=_NO_PROXY,
+            timeout=60,
+        )
+        assert upload_resp.status_code in (
             200,
             201,
-        ), f"Enroll step failed: {enroll_resp.status_code} {enroll_resp.text}"
-        speaker_id = enroll_resp.json().get("speaker_id")
-        assert speaker_id, f"No speaker_id in enroll response: {enroll_resp.json()}"
+        ), f"/api/transcribe upload failed: {upload_resp.status_code} {upload_resp.text}"
+        upload_body = upload_resp.json()
+        job_id = upload_body.get("id")
+        assert job_id, f"No job id in /api/transcribe response: {upload_body}"
 
-        try:
-            # --- Step 3: force a cohort rebuild (simulates daemon after debounce) ---
-            rebuild_resp = _post("/api/voiceprints/rebuild-cohort", data={})
-            assert (
-                rebuild_resp.status_code == 200
-            ), f"rebuild-cohort after enroll failed: {rebuild_resp.status_code} {rebuild_resp.text}"
-            rebuild_body = rebuild_resp.json()
-            cohort_size_after = rebuild_body.get("cohort_size", 0)
-
-            # --- Step 4: assert _asnorm was actually loaded with data ---
-            assert cohort_size_after > 0, (
-                f"AS-norm cohort is EMPTY after enroll + rebuild. "
-                f"baseline={baseline_cohort_size}, after={cohort_size_after}. "
-                "build_cohort_from_transcriptions() found no .npy files — "
-                "_asnorm was NOT updated; identify() is falling back to raw cosine."
-            )
-            assert cohort_size_after >= baseline_cohort_size, (
-                f"AS-norm cohort SHRANK after enroll + rebuild: "
-                f"{baseline_cohort_size} → {cohort_size_after}. "
-                "This indicates embeddings were lost during the rebuild."
+        if upload_body.get("deduplicated") is True:
+            pytest.skip(
+                f"SHA256 modification failed to bypass dedup "
+                f"(original={original_hash[:12]}, modified={modified_hash[:12]}, "
+                f"response={upload_body})"
             )
 
-        finally:
-            _delete(f"/api/voiceprints/{speaker_id}")
+        # --- Step 6: wait for the new job to finish ---
+        result = _poll_job(job_id, timeout=POLL_TIMEOUT)
+        segments = result.get("segments") or []
+        if not segments:
+            pytest.skip(
+                f"New transcription {job_id!r} produced no speech segments; "
+                "cannot verify cohort growth."
+            )
+
+        # --- Step 7: rebuild the AS-norm cohort and verify it grew ---
+        rebuild_resp = _post("/api/voiceprints/rebuild-cohort", data={})
+        assert (
+            rebuild_resp.status_code == 200
+        ), f"rebuild-cohort after new upload failed: {rebuild_resp.status_code} {rebuild_resp.text}"
+        cohort_size_after = rebuild_resp.json().get("cohort_size", 0)
+
+        assert cohort_size_after > baseline_cohort_size, (
+            f"AS-norm cohort did NOT grow: baseline={baseline_cohort_size}, "
+            f"after={cohort_size_after}. New transcription {job_id!r} produced "
+            f"{len(result.get('segments', []))} segments but "
+            "build_cohort_from_transcriptions found no new .npy files."
+        )
