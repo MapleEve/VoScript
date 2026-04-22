@@ -1,33 +1,104 @@
+<sub>🌐 <b>English</b> · <a href="README.md">中文</a></sub>
+
 <div align="center">
 
-# 🎙️ VoScript
+# VoScript 🎙️
 
-[简体中文](./README.md) | **English**
+> *"You finished the recording. You want to know who said what — not what 'Speaker A' said."*
 
 <a href="https://github.com/MapleEve/voscript/actions/workflows/ci.yml">
-  <img src="https://img.shields.io/github/actions/workflow/status/MapleEve/voscript/ci.yml?branch=main&style=for-the-badge" alt="CI" />
+  <img src="https://img.shields.io/github/actions/workflow/status/MapleEve/voscript/ci.yml?branch=main&style=flat-square" alt="CI" />
 </a>
 <a href="https://github.com/MapleEve/voscript/releases">
-  <img src="https://img.shields.io/github/v/release/MapleEve/voscript?style=for-the-badge" alt="Release" />
+  <img src="https://img.shields.io/github/v/release/MapleEve/voscript?style=flat-square" alt="Release" />
 </a>
 <a href="https://hub.docker.com/r/mapleeve/voscript">
-  <img src="https://img.shields.io/badge/Docker-ready-blue?style=for-the-badge&logo=docker" alt="Docker ready" />
+  <img src="https://img.shields.io/badge/Docker-ready-blue?style=flat-square&logo=docker" alt="Docker" />
 </a>
 <a href="./LICENSE">
-  <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge" alt="License: Apache 2.0" />
+  <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License" />
 </a>
 
-**Meeting recordings → transcripts with real speaker names. Self-hosted, GPU-powered, remembers every voice.**
+<br>
 
-[Quickstart](./doc/quickstart.en.md) · [API Reference](./doc/api.en.md) · [Security](./doc/security.en.md) · [Benchmarks](./doc/benchmarks.en.md) · [Changelog](./doc/changelog.en.md)
+**Meeting recordings → transcripts with real speaker names.**<br>
+Self-hosted · GPU-powered · Enroll a voice once, recognized in every future recording.
+
+<br>
+
+[Quickstart](./doc/quickstart.en.md) · [API Reference](./doc/api.en.md) · [Benchmarks](./doc/benchmarks.en.md) · [Changelog](./doc/changelog.en.md)
 
 </div>
 
 ---
 
-You have a meeting recording with six people. You want to know who said what. Whisper gives you a wall of text. pyannote can split it into "Speaker A / Speaker B / Speaker C" — but it doesn't know who anyone is. You still have to label every recording by hand.
+## Sound familiar?
 
-VoScript fixes that: **enroll a voice once, and it gets automatically identified in every future recording**. Not "Speaker 2" — "Maple".
+> After every meeting, you open the recording and manually tag names — "this part is Maple, this part is Tom..." A 90-minute meeting takes another 45 minutes to label.
+
+> You tried a speaker diarization tool. Got back Speaker A, Speaker B, Speaker C. Still had to figure out who was who.
+
+VoScript fixes that. **Enroll a voice once, and every future recording automatically gets that person's real name** — not "Speaker 2", but "Maple".
+
+---
+
+## Get started
+
+```bash
+git clone https://github.com/MapleEve/voscript.git && cd voscript
+cp .env.example .env   # fill in HF_TOKEN and API_KEY
+docker compose up -d --build
+```
+
+Open **http://localhost:8780** in a browser, upload a recording, wait for results.
+
+> Security: set a strong `API_KEY` in `.env` before exposing this on any network. Without it, anyone can modify your voiceprint library or trigger GPU jobs.
+
+Full setup + troubleshooting → [`doc/quickstart.en.md`](./doc/quickstart.en.md)
+
+---
+
+## Two ways to use it
+
+### Built-in web panel — open a browser and start working
+
+No code needed. The panel has two tabs:
+
+- **Transcribe**: upload an audio file, pick your settings, submit, get results
+- **Voiceprint library**: enroll speakers (upload sample → name → save), delete, browse
+
+Best for: occasional recordings, one-off transcription tasks, anyone who doesn't want to touch an API.
+
+### API integration — fully automated pipeline
+
+Point your tool at the service URL with an API Key, and recordings flow in, transcripts flow out. [BetterAINote](https://github.com/MapleEve/openplaud) connects this way. Any HTTP client works.
+
+Best for: long-term use, teams with shared recordings, existing audio workflows.
+
+---
+
+## What you get
+
+**Transcription output**
+
+- Timestamped transcript with every word precisely aligned
+- Real speaker names on every line (unrecognized voices labeled Unknown)
+- Handles multilingual recordings including Chinese and English
+
+**Voiceprint system**
+
+- Enroll today — recordings three years from now still match. Database is a plain file you can back up and move
+- Submit the same file twice and the second call returns instantly — no GPU re-run
+- Noisy recordings are auto-denoised; clean recordings are skipped automatically (prevents degrading good audio)
+
+**How you use it**
+
+- Built-in web panel for uploads, results, and voiceprint management — no code required
+- Plain HTTP API for integration — any tool that can send a request works, no framework lock-in
+
+---
+
+## How it works
 
 ```
 Audio  ──►  faster-whisper large-v3     transcription + word-level timestamps
@@ -37,42 +108,11 @@ Audio  ──►  faster-whisper large-v3     transcription + word-level timesta
        ──►  timestamped transcript with real speaker names
 ```
 
-## 30-second start
+Speaker matching uses AS-norm scoring to eliminate speaker-dependent baseline bias, combined with adaptive thresholds that relax per-speaker based on enrollment variance. Measured on 10 real recordings: recall 50% → 70%, zero false positives.
 
-> **Security**: set a strong `API_KEY` in `.env` before exposing this on any network. Without it, anyone can delete your voiceprint library or trigger GPU jobs.
+Full technical details → [`doc/benchmarks.en.md`](./doc/benchmarks.en.md)
 
-```bash
-git clone https://github.com/MapleEve/voscript.git && cd voscript
-cp .env.example .env        # at minimum: HF_TOKEN and API_KEY
-docker compose up -d --build
-curl -sf http://localhost:8780/healthz
-```
-
-Full setup + troubleshooting → [`doc/quickstart.en.md`](./doc/quickstart.en.md)
-
-## Features
-
-- **Persistent voiceprint library** — enroll once, auto-match across all future recordings. sqlite + sqlite-vec under the hood, top-k nearest-neighbour search, scales to thousands of speakers
-- **AS-norm scoring** — builds an impostor cohort from existing transcription embeddings at startup; eliminates speaker-dependent baseline bias, ~15–30% relative EER improvement
-- **Adaptive threshold** — each speaker's match threshold relaxes dynamically based on enrollment variance; lifted recall from 50% to 70% on 10 real recordings with zero false positives
-- **Speaker cluster consolidation** — when diarization splits one person into multiple clusters, they're automatically merged to a single label
-- **Word-level timestamps** — WhisperX forced alignment, every word precisely timed
-- **Optional denoising with SNR gate** — DeepFilterNet / noisereduce; audio above the SNR threshold is treated as clean and skipped automatically (prevents degrading already-clean recordings)
-- **File hash deduplication** — submitting the same file twice returns the existing result immediately, no GPU re-run
-- **Job persistence** — completed transcriptions remain accessible after restart
-- **Ngram dedup** — `no_repeat_ngram_size` parameter suppresses repetitive filler words in the transcript
-- **Plain HTTP contract** — any client that can send multipart/form-data works, no framework lock-in
-
-Security: path traversal protection, non-root container, upload size cap, constant-time auth, atomic writes — full list in [`doc/security.en.md`](./doc/security.en.md)
-
-## Integration
-
-It's a plain HTTP service. Two config values and you're done:
-
-- **Transcription base URL**: `http://<host>:8780`
-- **API key**: the `API_KEY` you set in `.env`
-
-[BetterAINote](https://github.com/MapleEve/openplaud) connects this way. Any other client works the same. Full API contract → [`doc/api.en.md`](./doc/api.en.md)
+---
 
 ## Documentation
 
@@ -86,14 +126,24 @@ It's a plain HTTP service. Two config values and you're done:
 | Benchmarks | [benchmarks.zh.md](./doc/benchmarks.zh.md) | [benchmarks.en.md](./doc/benchmarks.en.md) |
 | Changelog | [changelog.zh.md](./doc/changelog.zh.md) | [changelog.en.md](./doc/changelog.en.md) |
 
-## Contributing
+---
 
-PRs welcome — read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
+## Contact
+
+WeChat Official Account: **等枫再来** (Follow on WeChat)
+
+Questions, ideas, or just want to commiserate about voice transcription — come find me.
+
+---
 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=MapleEve/voscript&type=date)](https://www.star-history.com/#MapleEve/voscript&type=date)
 
-## License
+---
+
+## Contributing & License
+
+PRs welcome — read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
 
 Apache 2.0 — [LICENSE](./LICENSE)

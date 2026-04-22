@@ -1,33 +1,104 @@
+<sub>🌐 <a href="README.en.md">English</a> · <b>中文</b></sub>
+
 <div align="center">
 
 # VoScript 🎙️
 
-**简体中文** | [English](./README.en.md)
+> *「录完音，你想知道谁说了什么——而不是"说话人 A"说了什么。」*
 
 <a href="https://github.com/MapleEve/voscript/actions/workflows/ci.yml">
-  <img src="https://img.shields.io/github/actions/workflow/status/MapleEve/voscript/ci.yml?branch=main&style=for-the-badge" alt="CI" />
+  <img src="https://img.shields.io/github/actions/workflow/status/MapleEve/voscript/ci.yml?branch=main&style=flat-square" alt="CI" />
 </a>
 <a href="https://github.com/MapleEve/voscript/releases">
-  <img src="https://img.shields.io/github/v/release/MapleEve/voscript?style=for-the-badge" alt="Release" />
+  <img src="https://img.shields.io/github/v/release/MapleEve/voscript?style=flat-square" alt="Release" />
 </a>
 <a href="https://hub.docker.com/r/mapleeve/voscript">
-  <img src="https://img.shields.io/badge/Docker-ready-blue?style=for-the-badge&logo=docker" alt="Docker" />
+  <img src="https://img.shields.io/badge/Docker-ready-blue?style=flat-square&logo=docker" alt="Docker" />
 </a>
 <a href="./LICENSE">
-  <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge" alt="License" />
+  <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License" />
 </a>
 
-**会议录音 → 逐字稿，带真名说话人标签。自托管，GPU 驱动，记得住每个人的声音。**
+<br>
 
-[快速上手](./doc/quickstart.zh.md) · [API 参考](./doc/api.zh.md) · [安全策略](./doc/security.zh.md) · [Benchmarks](./doc/benchmarks.zh.md) · [更新日志](./doc/changelog.zh.md)
+**会议录音 → 带真名说话人标签的逐字稿。**<br>
+自托管 · GPU 驱动 · 声音登记一次，所有录音永久识别。
+
+<br>
+
+[快速上手](./doc/quickstart.zh.md) · [API 参考](./doc/api.zh.md) · [Benchmarks](./doc/benchmarks.zh.md) · [更新日志](./doc/changelog.zh.md)
 
 </div>
 
 ---
 
-开完会，录音里有六个人，你想知道谁说了什么。Whisper 只给你一段文字，pyannote 能告诉你"说话人A/说话人B"，但它不认识人——每次还是得手动贴名字。
+## 你是不是也遇到过这个
 
-VoScript 解决的就是这个：**登记一次声纹，之后所有录音里这个人都会被自动识别出来**。不是"说话人2"，是"Maple"。
+> 开完会，打开录音，一边播放一边手动加名字：「这段是 Maple，这段是 Tom……」90 分钟的会，整理要再花 45 分钟。
+
+> 试过带说话人分离的方案，出来是 Speaker A、Speaker B——还是不知道谁是谁，该对应的还是得手动对。
+
+VoScript 解决的就是这个。**把声音登记一次，之后所有录音自动打上真名**——不是「说话人 2」，是「Maple」。
+
+---
+
+## 开始用
+
+```bash
+git clone https://github.com/MapleEve/voscript.git && cd voscript
+cp .env.example .env   # 至少填 HF_TOKEN 和 API_KEY
+docker compose up -d --build
+```
+
+浏览器打开 **http://localhost:8780**，上传录音，等结果。
+
+> 安全提醒：公网部署前务必在 `.env` 设置强 `API_KEY`，否则任何人都能操作你的声纹库。
+
+完整安装步骤 + 排障 → [`doc/quickstart.zh.md`](./doc/quickstart.zh.md)
+
+---
+
+## 两种用法
+
+### 直接用网页面板——打开浏览器就能干活
+
+内置了一个轻量面板，不用写任何代码：
+
+- **转录 tab**：上传音频文件，选参数，提交，等结果
+- **声纹库 tab**：登记说话人（上传样本 → 命名 → 保存），删除，查看已有声纹
+
+适合：偶尔用一次、临时整理录音、不想配置 API 的场景。
+
+### 接入你的工具——全自动流水线
+
+配置服务地址和 API Key，录音自动发来转录，结果直接落进你的工作流。[BetterAINote](https://github.com/MapleEve/openplaud) 就是这样接的，其它客户端同理。
+
+适合：长期使用、团队共用、有现成录音工作流的场景。
+
+---
+
+## 你会得到什么
+
+**转录结果**
+
+- 带时间戳的逐字稿，每个词都精确对齐
+- 真名说话人标签（没登记过的标 Unknown）
+- 支持中文、英文等多语言混录
+
+**声纹系统**
+
+- 今天登记，三年后的录音还认识；数据库是普通文件，随时备份迁移
+- 相同录音提交两次，第二次直接返回已有结果，不重跑 GPU
+- 嘈杂录音自动降噪；干净录音自动跳过，不会越处理越差
+
+**使用方式**
+
+- 有网页面板，上传文件、查结果、管理声纹库，不用写代码
+- 也支持 HTTP API 接入，任何能发请求的工具都行
+
+---
+
+## 核心流程
 
 ```
 音频  ──►  faster-whisper large-v3     转录 + 词级时间戳
@@ -37,42 +108,11 @@ VoScript 解决的就是这个：**登记一次声纹，之后所有录音里这
       ──►  带时间戳 + 真名的逐字稿
 ```
 
-## 30 秒上手
+声纹匹配用 AS-norm 评分消除说话人依赖偏差，配合自适应阈值（每人根据登记样本方差动态调整）。实测 10 条真实录音：召回率 50% → 70%，零误识别。
 
-> **安全警告**：生产环境或公网暴露前**必须**在 `.env` 里设置 `API_KEY`，否则任何人都能删你的声纹库、触发 GPU 任务。
+技术细节 → [`doc/benchmarks.zh.md`](./doc/benchmarks.zh.md)
 
-```bash
-git clone https://github.com/MapleEve/voscript.git && cd voscript
-cp .env.example .env        # 至少填 HF_TOKEN 和 API_KEY
-docker compose up -d --build
-curl -sf http://localhost:8780/healthz
-```
-
-完整步骤 + 排障清单 → [`doc/quickstart.zh.md`](./doc/quickstart.zh.md)
-
-## 功能
-
-- **持久化声纹库** — 登记一次，后续所有录音自动识别。底层 sqlite + sqlite-vec，top-k 近邻，上千声纹毫无压力
-- **AS-norm 评分** — 启动时自动从历史转录构建 impostor cohort，消除说话人依赖的基准偏差，相对 EER 降低 15–30%
-- **自适应阈值** — 每位说话人的实际识别阈值根据注册样本的方差动态宽松，10 条真实录音召回率从 50% → 70%，零误识别
-- **说话人聚类合并** — 同一个人被分出多个聚类时自动合并为一个标签
-- **词级时间戳** — WhisperX forced alignment，每个词都有精确时间
-- **可选降噪 + SNR 门控** — DeepFilterNet / noisereduce，SNR 高于阈值的录音自动跳过（防止对干净音频劣化）
-- **文件哈希去重** — 相同文件重复提交直接返回已有结果，不重跑 GPU
-- **任务持久化** — 重启后已完成任务仍可访问
-- **ngram 去重** — `no_repeat_ngram_size` 参数抑制转录中的口语重复（比如"就是就是就是"）
-- **纯 HTTP 合同** — 任何能发 multipart/form-data 的客户端都能接入，不绑定特定框架
-
-安全相关：路径遍历防护、非 root 容器、上传大小限制、常量时间鉴权、原子写入……完整清单 → [`doc/security.zh.md`](./doc/security.zh.md)
-
-## 接入
-
-就是个普通 HTTP 服务，没有特殊依赖。配两个值就行：
-
-- **转录服务地址**：`http://<主机>:8780`
-- **API Key**：`.env` 里设的那个 `API_KEY`
-
-[BetterAINote](https://github.com/MapleEve/openplaud) 就是这样接的，其它客户端一样。完整接口合同 → [`doc/api.zh.md`](./doc/api.zh.md)
+---
 
 ## 文档
 
@@ -86,14 +126,24 @@ curl -sf http://localhost:8780/healthz
 | Benchmarks | [benchmarks.zh.md](./doc/benchmarks.zh.md) | [benchmarks.en.md](./doc/benchmarks.en.md) |
 | 更新日志 | [changelog.zh.md](./doc/changelog.zh.md) | [changelog.en.md](./doc/changelog.en.md) |
 
-## 贡献
+---
 
-欢迎 PR，请先读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+## 联系
+
+微信公众号：**等枫再来**
+
+有问题、有想法、想聊聊语音转录那些坑，欢迎来找我。
+
+---
 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=MapleEve/voscript&type=date)](https://www.star-history.com/#MapleEve/voscript&type=date)
 
-## License
+---
+
+## 贡献 & License
+
+欢迎 PR，请先读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
 Apache 2.0 — [LICENSE](./LICENSE)
