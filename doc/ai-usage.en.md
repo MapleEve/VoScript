@@ -174,6 +174,7 @@ auto-match.
 - ❌ Don't confuse `speaker_id` and `speaker_label`:
   - `speaker_label` = `SPEAKER_00`, local to a single recording
   - `speaker_id` = `spk_xxxx`, global voiceprint-library id
+- ❌ Don't re-submit the same audio file expecting a fresh transcription — the server's SHA256 deduplication will return the cached result immediately (`deduplicated: true`) without re-running Whisper. If a fresh re-transcription is truly needed, first delete the existing transcription via `DELETE /api/transcriptions/{id}`, then re-submit.
 
 ## Tips
 

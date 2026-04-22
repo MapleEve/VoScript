@@ -162,6 +162,7 @@ requests.post(
 - ❌ 不要把 `speaker_id` 和 `speaker_label` 搞混：
   - `speaker_label` = `SPEAKER_00`，录音内的本地标签
   - `speaker_id` = `spk_xxxx`，全局声纹库 id
+- ❌ 不要重复提交同一份音频文件期望重新转录 — 服务端 SHA256 去重会直接返回已有结果（`deduplicated: true`），不会重跑 Whisper。若确实需要重新转录，先通过 `DELETE /api/transcriptions/{id}` 删除旧记录，再重新提交。
 
 ## 建议
 
