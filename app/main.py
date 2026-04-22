@@ -3,7 +3,6 @@
 import hmac
 import logging
 import threading
-import time as _time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -69,14 +68,20 @@ async def lifespan(app: FastAPI):
     app.state.db = db
 
     # Background daemon: auto-rebuild AS-norm cohort after new enrollments.
-    def _cohort_rebuild_worker(db, transcriptions_dir, interval_s=60, debounce_s=30):
-        while True:
-            _time.sleep(interval_s)
-            db.maybe_rebuild_cohort(str(transcriptions_dir), debounce_s=debounce_s)
+    _stop_event = threading.Event()
+
+    def _cohort_rebuild_worker(
+        db, transcriptions_dir, stop_event, interval_s=60, debounce_s=30
+    ):
+        while not stop_event.wait(timeout=interval_s):
+            try:
+                db.maybe_rebuild_cohort(str(transcriptions_dir), debounce_s=debounce_s)
+            except Exception:
+                logger.exception("cohort-rebuild worker tick failed")
 
     _rebuild_thread = threading.Thread(
         target=_cohort_rebuild_worker,
-        args=(db, TRANSCRIPTIONS_DIR),
+        args=(db, TRANSCRIPTIONS_DIR, _stop_event),
         daemon=True,
         name="cohort-rebuild",
     )
@@ -100,14 +105,16 @@ async def lifespan(app: FastAPI):
         logger.info("API_KEY auth enabled for /api/* and / (Bearer or X-API-Key).")
 
     yield
-    # No teardown required; daemon threads finish on process exit.
+
+    _stop_event.set()
+    _rebuild_thread.join(timeout=5)
 
 
 # ---------------------------------------------------------------------------
 # Application
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="VoScript", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="VoScript", version="0.7.1", lifespan=lifespan)
 
 # CORS
 _cors_origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()] or ["*"]

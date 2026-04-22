@@ -32,18 +32,23 @@ def _atomic_write_json(path: Path, payload: dict, **json_kwargs) -> None:
     """Write JSON atomically: write to temp file in same dir, then os.replace()."""
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", dir=parent, delete=False, suffix=".tmp", encoding="utf-8"
-    ) as tf:
-        json.dump(payload, tf, **json_kwargs)
-        tf.flush()
-        os.fsync(tf.fileno())
-    os.replace(tf.name, path)
-
-
-# CQ-C1: counter used to periodically rebuild AS-norm cohort inside the
-# transcription worker so it becomes active without requiring a server restart.
-_cohort_rebuild_counter: dict = {}
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", dir=parent, delete=False, suffix=".tmp", encoding="utf-8"
+        ) as tf:
+            tmp_path = tf.name
+            json.dump(payload, tf, **json_kwargs)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -356,20 +361,6 @@ def run_transcription(
 
         if file_hash:
             register_hash(file_hash, job_id)
-
-        # CQ-C1: After each successful transcription, check if AS-norm cohort
-        # should be rebuilt. Every 10th job (or when cohort is absent) we rebuild
-        # so that newly enrolled speakers contribute to normalization without
-        # requiring a server restart.
-        try:
-            _cohort_rebuild_counter[0] = _cohort_rebuild_counter.get(0, 0) + 1
-            if voiceprint_db.cohort_size == 0 or _cohort_rebuild_counter[0] % 10 == 0:
-                voiceprint_db.build_cohort_from_transcriptions(str(TRANSCRIPTIONS_DIR))
-                logger.info(
-                    "AS-norm cohort rebuilt: size=%d", voiceprint_db.cohort_size
-                )
-        except Exception as exc:
-            logger.warning("cohort rebuild failed: %s", exc)
 
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["result"] = tr

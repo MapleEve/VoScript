@@ -24,7 +24,9 @@ async def enroll_speaker(
     tr_id: str = Form(...),
     speaker_label: str = Form(...),
     speaker_name: str = Form(...),
-    speaker_id: str = Form(None),
+    speaker_id: Annotated[
+        str | None, Form(pattern=r"^spk_[A-Za-z0-9_-]{1,64}$")
+    ] = None,
 ):
     """Enroll or update a voiceprint from a transcription's speaker embedding."""
     import numpy as np
