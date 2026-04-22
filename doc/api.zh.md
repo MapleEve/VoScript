@@ -186,8 +186,8 @@ curl -X POST http://localhost:8780/api/transcribe \
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `speaker_map` | object | `speaker_label → {speaker_id, speaker_name}` 的映射，从 `segments` 聚合而来，便于前端一次性渲染人名下拉 / 统计 |
-| `unique_speakers` | int | 去重后的说话人数（基于 `speaker_label`） |
+| `speaker_map` | object | `speaker_label → {matched_id, matched_name}` 的映射，反映 **diarization 模型的声纹匹配结果**，不随人工单段纠错变化；便于前端一次性渲染人名下拉 / 统计 |
+| `unique_speakers` | array[string] | 去重后的说话人名列表，从 `segments[].speaker_name` 实时重算，反映最新的人工纠错结果 |
 
 与 `GET /api/jobs/{id}` 的 `result` 不同，本端点从磁盘读取持久化结果，**进程重启后
 仍可访问**；`/api/jobs/{id}` 优先读内存，内存未命中时回落到磁盘（见上方注意事项）。

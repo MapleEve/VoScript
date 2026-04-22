@@ -53,11 +53,13 @@ with speaker names. This service (`voscript`) is the
      cosine mode.
    - **cohort size ≥ 10**: true AS-norm is active; the effective normalized score
      threshold is approximately 0.5.
-   - **Refresh timing**: the cohort is built **once at startup** and is **not**
-     refreshed automatically after jobs complete. Call
-     `POST /api/voiceprints/rebuild-cohort` or restart the service to incorporate
-     new embeddings. For long-running deployments, manually trigger a rebuild after
-     bulk enrollment — otherwise new embeddings never enter the impostor distribution.
+   - **Refresh timing**: the cohort is built once at startup. After that, every
+     enroll / update operation sets a dirty flag; a background thread ticks every
+     60 s and triggers an automatic rebuild once the flag is set and a debounce
+     window (default 10 s) has elapsed. **No manual action is needed** — new
+     embeddings enter the impostor distribution within roughly 60–70 s of
+     enrollment. `POST /api/voiceprints/rebuild-cohort` remains available for an
+     immediate forced rebuild.
 6. **Omitting `language` enables auto-detection.** Whisper detects the language on
    its own; the service also injects an `initial_prompt` that nudges the decoder
    toward Simplified Chinese output (useful for Mandarin audio). The result's
