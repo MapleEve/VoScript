@@ -12,6 +12,7 @@ Covers:
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
@@ -37,7 +38,10 @@ from services.job_service import (
     jobs,
     register_in_flight,
     run_transcription,
+    unregister_in_flight,
 )
+
+_SPK_ID_RE = re.compile(r"^spk_[A-Za-z0-9_-]{1,64}$")
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +155,16 @@ async def transcribe(
     # Persist status.json BEFORE the worker thread starts so that a crash
     # between the in-memory registration and the worker's first _write_status
     # still leaves recover_orphan_jobs() a record to mark as failed.
-    _write_status(job_id, "queued", filename=safe_filename)
+    # If the write fails (disk full, permissions), abort cleanly rather than
+    # starting a thread with no durable record.
+    if not _write_status(job_id, "queued", filename=safe_filename):
+        del jobs[job_id]
+        save_path.unlink(missing_ok=True)
+        if file_hash:
+            unregister_in_flight(file_hash)
+        raise HTTPException(
+            503, "Failed to persist job state — disk error, retry later"
+        )
     # CD-C3: daemon=True ensures this thread does not prevent the process from
     # exiting on SIGTERM — the OS will clean up in-progress transcriptions on
     # shutdown rather than hanging indefinitely waiting for the thread to finish.
@@ -299,6 +312,9 @@ async def reassign_speaker(
     modified — it tracks the diarization-model matching result, not
     manual per-segment corrections.
     """
+    if speaker_id and not _SPK_ID_RE.match(speaker_id):
+        raise HTTPException(422, "Invalid speaker_id format")
+
     result_file = safe_tr_dir(tr_id) / "result.json"
     if not result_file.exists():
         raise HTTPException(404, "Transcription not found")

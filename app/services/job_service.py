@@ -61,8 +61,13 @@ def _write_status(
     status: str,
     error: str | None = None,
     filename: str | None = None,
-) -> None:
-    """Write job status to disk for persistence across process restarts."""
+) -> bool:
+    """Write job status to disk for persistence across process restarts.
+
+    Returns True on success, False on failure. Callers that need durability
+    (e.g. the initial "queued" write before the worker thread starts) should
+    check the return value and abort if False.
+    """
     status_path = TRANSCRIPTIONS_DIR / job_id / "status.json"
     try:
         payload = {
@@ -73,8 +78,10 @@ def _write_status(
         if filename is not None:
             payload["filename"] = filename
         _atomic_write_json(status_path, payload)
+        return True
     except Exception as exc:
         logger.warning("Failed to write status.json for %s: %s", job_id, exc)
+        return False
 
 
 def recover_orphan_jobs() -> None:

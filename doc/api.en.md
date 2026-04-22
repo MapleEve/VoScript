@@ -175,7 +175,13 @@ no need to cross-reference the original request.
 
 ### `GET /api/transcriptions/{tr_id}` — full result
 
-Same shape as the `result` field inside `GET /api/jobs/{id}`.
+Same shape as the `result` field inside `GET /api/jobs/{id}`, plus two
+aggregation fields for UI / downstream consumers:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `speaker_map` | object | `speaker_label → {matched_id, matched_name}` mapping; reflects the **diarization model's voiceprint match result** and does not change when segments are manually corrected |
+| `unique_speakers` | array[string] | Deduplicated list of speaker names, recalculated live from `segments[].speaker_name` to reflect the latest manual corrections |
 
 ### `GET /api/export/{tr_id}`
 
@@ -244,7 +250,15 @@ Response:
 
 `skipped` — number of transcriptions whose embedding files could not be loaded (corrupt or missing `.npy`).
 
-Since 0.5.0, the service auto-builds the AS-norm scoring matrix on startup from existing transcriptions. When active, voiceprint identification uses a normalized score (relative to the impostor distribution); the effective threshold is fixed at `0.5` and `VOICEPRINT_THRESHOLD` is ignored. Use `/api/voiceprints/rebuild-cohort` to refresh manually.
+**Cohort lifecycle and behaviour**:
+
+| Cohort size | Identification path | Effective threshold |
+| --- | --- | --- |
+| 0 (fresh install / no transcriptions) | raw cosine | base 0.75 + adaptive relaxation, floor 0.60 |
+| 1–9 (fewer than 10) | raw cosine (`score()` fallback) | same as above |
+| ≥ 10 | AS-norm normalised score | ~0.5 (relative to impostor distribution; `VOICEPRINT_THRESHOLD` ignored) |
+
+**Refresh timing**: the cohort is built once at startup. After that, every enroll / update operation sets a dirty flag; a background daemon thread ticks every 60 s and triggers an automatic rebuild once the flag is set and a debounce window (default 30 s) has elapsed. **No manual action is needed** — new embeddings enter the impostor distribution within up to ~90 s of enrollment. `POST /api/voiceprints/rebuild-cohort` remains available for an immediate forced rebuild.
 
 #### `PUT /api/voiceprints/{id}/name`
 
