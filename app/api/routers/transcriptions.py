@@ -309,8 +309,9 @@ async def reassign_speaker(
         raise HTTPException(404, "Segment not found")
 
     seg["speaker_name"] = speaker_name
-    if speaker_id:
-        seg["speaker_id"] = speaker_id
+    # Explicitly overwrite (including clear) any stale speaker_id from a
+    # previous diarization match so the corrected segment stays coherent.
+    seg["speaker_id"] = speaker_id or None
 
     # Keep unique_speakers consistent with the corrected segments list.
     data["unique_speakers"] = sorted(
