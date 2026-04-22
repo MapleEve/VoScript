@@ -2,6 +2,8 @@
 
 import hmac
 import logging
+import threading
+import time as _time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -65,6 +67,20 @@ async def lifespan(app: FastAPI):
             "AS-norm cohort init failed (identify will use raw cosine): %s", exc
         )
     app.state.db = db
+
+    # Background daemon: auto-rebuild AS-norm cohort after new enrollments.
+    def _cohort_rebuild_worker(db, transcriptions_dir, interval_s=60, debounce_s=30):
+        while True:
+            _time.sleep(interval_s)
+            db.maybe_rebuild_cohort(str(transcriptions_dir), debounce_s=debounce_s)
+
+    _rebuild_thread = threading.Thread(
+        target=_cohort_rebuild_worker,
+        args=(db, TRANSCRIPTIONS_DIR),
+        daemon=True,
+        name="cohort-rebuild",
+    )
+    _rebuild_thread.start()
 
     # Initialise transcription pipeline
     app.state.pipeline = TranscriptionPipeline(WHISPER_MODEL, DEVICE, HF_TOKEN)

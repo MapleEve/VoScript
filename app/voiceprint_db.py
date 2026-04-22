@@ -22,6 +22,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time as _time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -128,6 +129,9 @@ class VoiceprintDB:
 
         self._asnorm: ASNormScorer | None = None
         self._asnorm_threshold: float = 0.5  # AS-norm operating point
+
+        self._cohort_dirty: bool = False
+        self._cohort_last_enroll: float = 0.0
 
         self._conn = self._open_connection()
         self._init_schema()
@@ -387,6 +391,8 @@ class VoiceprintDB:
                 # recomputes the average embedding, preserving all other state.
                 # _lock is an RLock so re-acquisition by update_speaker is safe.
                 self.update_speaker(speaker_id, embedding)
+                self._cohort_dirty = True
+                self._cohort_last_enroll = _time.monotonic()
                 return speaker_id
 
             # No existing speaker with this name — proceed with INSERT.
@@ -416,6 +422,8 @@ class VoiceprintDB:
                 self._conn.execute("ROLLBACK")
                 raise
 
+        self._cohort_dirty = True
+        self._cohort_last_enroll = _time.monotonic()
         return speaker_id
 
     def update_speaker(
@@ -466,6 +474,9 @@ class VoiceprintDB:
             except Exception:
                 self._conn.execute("ROLLBACK")
                 raise
+
+        self._cohort_dirty = True
+        self._cohort_last_enroll = _time.monotonic()
 
     def delete_speaker(self, speaker_id: str):
         with self._lock:
@@ -818,3 +829,23 @@ class VoiceprintDB:
 
     def set_asnorm_threshold(self, threshold: float):
         self._asnorm_threshold = threshold
+
+    def maybe_rebuild_cohort(
+        self, transcriptions_dir: str, debounce_s: float = 30.0
+    ) -> bool:
+        """Rebuild the AS-norm cohort if dirty and debounce period has elapsed.
+
+        Returns True if a rebuild was triggered, False otherwise.
+        """
+        if not self._cohort_dirty:
+            return False
+        if _time.monotonic() - self._cohort_last_enroll < debounce_s:
+            return False
+        try:
+            n = self.build_cohort_from_transcriptions(transcriptions_dir)
+            self._cohort_dirty = False
+            logger.info("auto-rebuild: AS-norm cohort updated (%d embeddings)", n)
+            return True
+        except Exception as exc:
+            logger.warning("auto-rebuild: cohort rebuild failed: %s", exc)
+            return False
