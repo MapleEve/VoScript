@@ -25,9 +25,7 @@ class PipelineContext:
     voiceprint_matches: dict[str, Any] = field(default_factory=dict)
     temporary_paths: list[Path] = field(default_factory=list)
     result: PipelineResult | dict[str, Any] | None = None
-    metadata: dict[str, Any] = field(
-        default_factory=lambda: {"executed_stages": []}
-    )
+    metadata: dict[str, Any] = field(default_factory=lambda: {"executed_stages": []})
 
     def mark_stage(self, stage_name: str) -> None:
         self.metadata.setdefault("executed_stages", []).append(stage_name)

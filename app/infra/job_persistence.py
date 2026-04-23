@@ -84,4 +84,3 @@ def recover_orphan_jobs() -> None:
                 )
     except Exception as exc:
         logger.warning("AR-C2: orphan job recovery scan failed: %s", exc)
-

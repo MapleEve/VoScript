@@ -26,7 +26,9 @@ def extract_speaker_embeddings(
 ) -> SpeakerEmbeddingResult:
     """Compatibility helper around the selected embedding provider."""
 
-    provider = cast(SpeakerEmbeddingProvider, resolve_provider("embedding", provider_name))
+    provider = cast(
+        SpeakerEmbeddingProvider, resolve_provider("embedding", provider_name)
+    )
     request = SpeakerEmbeddingRequest(
         pipeline=pipeline,
         audio_path=audio_path,

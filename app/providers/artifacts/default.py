@@ -74,8 +74,8 @@ class InMemoryArtifactsProvider:
             return None
 
         effective_denoise = (
-            context.request.denoise_model or DENOISE_MODEL
-        ).strip().lower()
+            (context.request.denoise_model or DENOISE_MODEL).strip().lower()
+        )
         effective_snr = (
             context.request.snr_threshold
             if context.request.snr_threshold is not None

@@ -23,19 +23,40 @@ class FilesystemTranscriptionArtifactStore(TranscriptionArtifactStore):
     ) -> PersistedTranscriptionArtifacts:
         request.output_dir.mkdir(parents=True, exist_ok=True)
         result_path = request.output_dir / "result.json"
-        _atomic_write_json(
-            result_path,
-            request.transcription,
-            ensure_ascii=False,
-            indent=2,
-        )
-
         embedding_paths: dict[str, Path] = {}
-        for speaker_label, embedding in request.speaker_embeddings.items():
-            safe_label = safe_speaker_label(speaker_label)
-            emb_path = request.output_dir / f"emb_{safe_label}.npy"
-            np.save(emb_path, embedding)
-            embedding_paths[speaker_label] = emb_path
+        result_existed = result_path.exists()
+        attempted_embedding_paths: list[Path] = []
+        embedding_preexisting: dict[Path, bool] = {}
+
+        try:
+            _atomic_write_json(
+                result_path,
+                request.transcription,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+            for speaker_label, embedding in request.speaker_embeddings.items():
+                safe_label = safe_speaker_label(speaker_label)
+                emb_path = request.output_dir / f"emb_{safe_label}.npy"
+                attempted_embedding_paths.append(emb_path)
+                embedding_preexisting.setdefault(emb_path, emb_path.exists())
+                np.save(emb_path, embedding)
+                embedding_paths[speaker_label] = emb_path
+        except Exception:
+            for emb_path in reversed(attempted_embedding_paths):
+                if embedding_preexisting.get(emb_path, False):
+                    continue
+                try:
+                    emb_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if not result_existed:
+                try:
+                    result_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
 
         return PersistedTranscriptionArtifacts(
             result_path=result_path,

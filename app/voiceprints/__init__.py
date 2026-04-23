@@ -1,2 +1,1 @@
 """Voiceprint domain package."""
-

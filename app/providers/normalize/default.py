@@ -20,9 +20,7 @@ logger = logging.getLogger(__name__)
 class FFmpegInputNormalizer(InputNormalizationProvider):
     """Normalize uploads into the WAV shape expected by the pipeline."""
 
-    def normalize(
-        self, request: AudioNormalizationRequest
-    ) -> AudioNormalizationResult:
+    def normalize(self, request: AudioNormalizationRequest) -> AudioNormalizationResult:
         input_path = request.input_path
         target_suffix = f".{request.target_format.lstrip('.').lower()}"
         normalized_path = input_path.with_suffix(target_suffix)

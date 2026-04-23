@@ -25,6 +25,7 @@ from .runner import PipelineRunner
 
 logger = logging.getLogger(__name__)
 
+
 class TranscriptionPipeline:
     def __init__(
         self,

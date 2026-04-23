@@ -71,7 +71,9 @@ class VoiceprintCohortManager:
             skipped_files = 0
             expected_shape = (self._embedding_dim,)
 
-            for result_path in _glob.glob(str(Path(transcriptions_dir) / "*/result.json")):
+            for result_path in _glob.glob(
+                str(Path(transcriptions_dir) / "*/result.json")
+            ):
                 try:
                     with open(result_path, encoding="utf-8") as fh:
                         payload = json.load(fh)
@@ -103,7 +105,9 @@ class VoiceprintCohortManager:
             if save_target is not None:
                 save_target.parent.mkdir(parents=True, exist_ok=True)
                 np.save(save_target, cohort)
-                logger.info("Cohort saved: %d embeddings → %s", len(cohort), save_target)
+                logger.info(
+                    "Cohort saved: %d embeddings → %s", len(cohort), save_target
+                )
 
             new_scorer = ASNormScorer(cohort, top_n=min(200, len(cohort)))
             with self._db._lock:
@@ -135,7 +139,9 @@ class VoiceprintCohortManager:
                     save_target,
                 )
             else:
-                logger.info("auto-rebuild: AS-norm cohort updated (%d embeddings)", size)
+                logger.info(
+                    "auto-rebuild: AS-norm cohort updated (%d embeddings)", size
+                )
             return size > 0
         except Exception as exc:
             logger.warning("auto-rebuild: cohort rebuild failed: %s", exc)
@@ -172,7 +178,11 @@ class VoiceprintCohortManager:
         skipped = 0
         for npy_path in result_path.parent.glob("emb_*.npy"):
             try:
-                arr = np.load(str(npy_path), allow_pickle=False).flatten().astype(np.float32)
+                arr = (
+                    np.load(str(npy_path), allow_pickle=False)
+                    .flatten()
+                    .astype(np.float32)
+                )
                 if arr.shape == expected_shape:
                     collected.append(arr)
             except Exception as exc:

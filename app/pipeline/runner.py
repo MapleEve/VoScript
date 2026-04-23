@@ -39,9 +39,9 @@ class PipelineRunner:
                 logger.info("Running pipeline stage: %s", stage_name)
                 stage = self.resolve_stage(stage_name)
                 context.mark_stage(stage_name)
-                context.metadata.setdefault("selected_providers", {})[
-                    stage_name
-                ] = request.provider_for(stage_name)
+                context.metadata.setdefault("selected_providers", {})[stage_name] = (
+                    request.provider_for(stage_name)
+                )
                 stage(context)
             return context
         finally:

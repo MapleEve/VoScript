@@ -92,7 +92,9 @@ class VoiceprintStorage:
     def _init_schema(self):
         with self._lock:
             self.conn.executescript(_CORE_DDL)
-            cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(speakers)")}
+            cols = {
+                row["name"] for row in self.conn.execute("PRAGMA table_info(speakers)")
+            }
             if "sample_spread" not in cols:
                 logger.info("voiceprint_db: adding speakers.sample_spread column")
                 self.conn.execute("ALTER TABLE speakers ADD COLUMN sample_spread REAL")
@@ -107,7 +109,9 @@ class VoiceprintStorage:
             self.vec_loaded = True
             logger.debug("sqlite-vec %s loaded", sqlite_vec.__version__)
 
-            row = self.conn.execute("SELECT embedding FROM speaker_avg LIMIT 1").fetchone()
+            row = self.conn.execute(
+                "SELECT embedding FROM speaker_avg LIMIT 1"
+            ).fetchone()
             if row is not None:
                 self.ensure_vec_table(len(blob_to_emb(row["embedding"])))
         except Exception as exc:  # pragma: no cover
@@ -143,7 +147,9 @@ class VoiceprintStorage:
         )
 
     def delete_vec(self, speaker_id: str):
-        self.conn.execute("DELETE FROM speaker_vecs WHERE speaker_id = ?", (speaker_id,))
+        self.conn.execute(
+            "DELETE FROM speaker_vecs WHERE speaker_id = ?", (speaker_id,)
+        )
 
     def _maybe_migrate_legacy(self):
         index_file = self.db_dir / "index.json"
@@ -167,10 +173,16 @@ class VoiceprintStorage:
                 avg_path = self.db_dir / f"{speaker_id}_avg.npy"
                 samples_path = self.db_dir / f"{speaker_id}_samples.npy"
                 if not avg_path.exists():
-                    logger.warning("Missing %s, skipping speaker %s", avg_path, speaker_id)
+                    logger.warning(
+                        "Missing %s, skipping speaker %s", avg_path, speaker_id
+                    )
                     continue
 
-                avg_emb = np.load(str(avg_path), allow_pickle=False).flatten().astype(np.float32)
+                avg_emb = (
+                    np.load(str(avg_path), allow_pickle=False)
+                    .flatten()
+                    .astype(np.float32)
+                )
                 now = datetime.now().isoformat()
                 self.conn.execute(
                     "INSERT INTO speakers(id, name, sample_count, created_at, updated_at) "

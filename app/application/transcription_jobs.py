@@ -40,6 +40,7 @@ def run_transcription(
         _write_status(job_id, status, filename=extra_filename)
 
     try:
+
         def _process_pipeline():
             return pipeline.process(
                 str(audio_path),

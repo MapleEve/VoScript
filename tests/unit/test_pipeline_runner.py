@@ -1,5 +1,8 @@
 """Unit tests for stable pipeline stage slots and runner orchestration."""
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from pipeline import TranscriptionPipeline
 from pipeline.contracts import (
@@ -450,3 +453,71 @@ def test_runner_uses_explicit_artifacts_provider_selection():
     assert context.metadata["selected_providers"]["artifacts"] == "memory_stub"
     assert result["transcription"]["id"] == "tr_selected"
     assert result["artifact_paths"]["result_path"] == "memory://tr_selected/result.json"
+
+
+def test_runner_cleans_temporary_paths_and_keeps_metadata_on_stage_failure(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "input.mp3"
+    source.write_bytes(b"audio")
+    normalized = tmp_path / "input.wav"
+    enhanced = tmp_path / "input.denoised.wav"
+
+    request = PipelineRequest(
+        audio_path=str(source),
+        provider_selection={
+            "normalize": "norm-stub",
+            "enhance": "enhance-stub",
+        },
+    )
+    runner = PipelineRunner(
+        stage_order=("ingest", "normalize", "enhance"),
+        stage_overrides={
+            "ingest": lambda context: context.metadata.__setitem__(
+                "ingest",
+                {"status": "ready"},
+            ),
+            "normalize": lambda context: _stage_write_temp(
+                context,
+                normalized,
+                metadata_key="normalize",
+            ),
+            "enhance": lambda context: _stage_fail_after_temp(
+                context,
+                enhanced,
+                metadata_key="enhance",
+            ),
+        },
+    )
+    context = runner.build_context(SimpleNamespace(), request)
+    monkeypatch.setattr(runner, "build_context", lambda pipeline, request: context)
+
+    with pytest.raises(RuntimeError, match="enhance exploded"):
+        runner.run_context(SimpleNamespace(), request)
+
+    assert not normalized.exists()
+    assert not enhanced.exists()
+    assert context.metadata["executed_stages"] == ["ingest", "normalize", "enhance"]
+    assert context.metadata["selected_providers"] == {
+        "ingest": "default",
+        "normalize": "norm_stub",
+        "enhance": "enhance_stub",
+    }
+    assert context.metadata["normalize"]["temporary_path"] == str(normalized)
+    assert context.metadata["enhance"]["temporary_path"] == str(enhanced)
+
+
+def _stage_write_temp(context, path: Path, *, metadata_key: str) -> None:
+    path.write_bytes(metadata_key.encode("utf-8"))
+    context.temporary_paths.append(path)
+    context.working_audio_path = str(path)
+    context.metadata[metadata_key] = {
+        "status": "prepared",
+        "temporary_path": str(path),
+    }
+
+
+def _stage_fail_after_temp(context, path: Path, *, metadata_key: str) -> None:
+    _stage_write_temp(context, path, metadata_key=metadata_key)
+    context.metadata[metadata_key]["status"] = "failing"
+    raise RuntimeError("enhance exploded")

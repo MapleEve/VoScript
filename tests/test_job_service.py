@@ -56,9 +56,15 @@ def job_service(tmp_path, monkeypatch):
     persistence_mod = importlib.import_module("infra.job_persistence")
     runtime_mod = importlib.import_module("infra.job_runtime")
 
+    runtime_mod.jobs = runtime_mod._LRUJobsDict(maxsize=200)
+    app_mod.jobs = runtime_mod.jobs
+    runtime_mod._in_flight_hashes.clear()
     monkeypatch.setattr(app_mod, "register_hash", lambda *a, **kw: None)
 
     return SimpleNamespace(
+        app_mod=app_mod,
+        persistence_mod=persistence_mod,
+        runtime_mod=runtime_mod,
         _LRUJobsDict=runtime_mod._LRUJobsDict,
         jobs=runtime_mod.jobs,
         recover_orphan_jobs=persistence_mod.recover_orphan_jobs,
@@ -190,6 +196,98 @@ def test_job_status_written_to_disk(job_service, tmp_path):
     assert result["id"] == job_id
     assert len(result["segments"]) == 1
     assert result["segments"][0]["text"] == "hello world"
+
+
+def test_job_registers_hash_only_after_successful_pipeline(
+    job_service, tmp_path, monkeypatch
+):
+    """Hash registration happens only after pipeline completion succeeds."""
+    job_id = "tr_hash_success"
+    file_hash = "sha256:ok"
+    job_service.jobs[job_id] = {"status": "queued", "filename": "probe.wav"}
+
+    audio_path = tmp_path / "uploads" / f"{job_id}_probe.wav"
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path.write_bytes(b"")
+
+    register_hash = MagicMock()
+    unregister_in_flight = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        job_service.app_mod,
+        "run_serialized_gpu_work",
+        lambda work, logger=None: work(),
+    )
+    monkeypatch.setattr(job_service.app_mod, "register_hash", register_hash)
+    monkeypatch.setattr(
+        job_service.app_mod,
+        "unregister_in_flight",
+        unregister_in_flight,
+    )
+
+    job_service.run_transcription(
+        job_id=job_id,
+        audio_path=audio_path,
+        language="en",
+        min_speakers=0,
+        max_speakers=0,
+        pipeline=_fake_pipeline(),
+        voiceprint_db=_fake_voiceprint_db(),
+        file_hash=file_hash,
+    )
+
+    register_hash.assert_called_once_with(file_hash, job_id)
+    unregister_in_flight.assert_called_once_with(file_hash, job_id)
+    assert job_service.jobs[job_id]["status"] == "completed"
+
+
+def test_job_failure_marks_status_and_unregisters_in_flight(
+    job_service, tmp_path, monkeypatch
+):
+    """Pipeline failures must persist failed status and always release in-flight."""
+    job_id = "tr_pipeline_fail"
+    file_hash = "sha256:fail"
+    job_service.jobs[job_id] = {"status": "queued", "filename": "broken.wav"}
+
+    audio_path = tmp_path / "uploads" / f"{job_id}_broken.wav"
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path.write_bytes(b"broken")
+
+    pipeline = MagicMock()
+    pipeline.process.side_effect = RuntimeError("pipeline exploded")
+    register_hash = MagicMock()
+    unregister_in_flight = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        job_service.app_mod,
+        "run_serialized_gpu_work",
+        lambda work, logger=None: work(),
+    )
+    monkeypatch.setattr(job_service.app_mod, "register_hash", register_hash)
+    monkeypatch.setattr(
+        job_service.app_mod,
+        "unregister_in_flight",
+        unregister_in_flight,
+    )
+
+    job_service.run_transcription(
+        job_id=job_id,
+        audio_path=audio_path,
+        language="en",
+        min_speakers=0,
+        max_speakers=0,
+        pipeline=pipeline,
+        voiceprint_db=_fake_voiceprint_db(),
+        file_hash=file_hash,
+    )
+
+    status_path = tmp_path / "transcriptions" / job_id / "status.json"
+    data = json.loads(status_path.read_text())
+
+    assert data["status"] == "failed"
+    assert "pipeline exploded" in data["error"]
+    assert job_service.jobs[job_id]["status"] == "failed"
+    assert job_service.jobs[job_id]["error"] == "pipeline exploded"
+    register_hash.assert_not_called()
+    unregister_in_flight.assert_called_once_with(file_hash, job_id)
 
 
 # ---------------------------------------------------------------------------

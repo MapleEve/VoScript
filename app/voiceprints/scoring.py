@@ -87,8 +87,6 @@ def effective_threshold(
         else:
             dyn = base
     else:
-        relax = min(
-            _SPREAD_RELAXATION_K * float(sample_spread), _SPREAD_RELAXATION_CAP
-        )
+        relax = min(_SPREAD_RELAXATION_K * float(sample_spread), _SPREAD_RELAXATION_CAP)
         dyn = base - relax
     return max(_ABSOLUTE_FLOOR, min(base, dyn))

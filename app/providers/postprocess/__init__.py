@@ -10,9 +10,7 @@ from pipeline.registry import resolve_provider
 from .default import DefaultPostprocessProvider, default_postprocess_provider
 
 
-def run_postprocess(
-    context: PipelineContext, provider_name: str = "default"
-) -> None:
+def run_postprocess(context: PipelineContext, provider_name: str = "default") -> None:
     """Apply the selected post-process provider to the shared context."""
 
     provider = cast(
