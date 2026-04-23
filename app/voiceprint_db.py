@@ -119,7 +119,9 @@ class VoiceprintDB:
     """
 
     def __init__(
-        self, db_dir: str = "/data/voiceprints", cohort_path: str | os.PathLike | None = None
+        self,
+        db_dir: str = "/data/voiceprints",
+        cohort_path: str | os.PathLike | None = None,
     ):
         self.db_dir = Path(db_dir)
         self.db_dir.mkdir(parents=True, exist_ok=True)
@@ -850,7 +852,9 @@ class VoiceprintDB:
             if save_target is not None:
                 save_target.parent.mkdir(parents=True, exist_ok=True)
                 np.save(save_target, cohort)
-                logger.info("Cohort saved: %d embeddings → %s", len(cohort), save_target)
+                logger.info(
+                    "Cohort saved: %d embeddings → %s", len(cohort), save_target
+                )
             new_scorer = ASNormScorer(cohort, top_n=min(200, len(cohort)))
             with self._lock:
                 self._asnorm = new_scorer

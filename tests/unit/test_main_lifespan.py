@@ -11,7 +11,9 @@ The thread and stop_event are locals inside the lifespan coroutine, so we
 locate the thread by its well-known name via threading.enumerate().
 """
 
+import inspect
 import time
+import pytest
 import threading
 
 
@@ -21,6 +23,24 @@ def _find_rebuild_thread():
         if t.name == "cohort-rebuild":
             return t
     return None
+
+
+@pytest.fixture(autouse=True)
+def _patch_voiceprint_stub_ctor(monkeypatch):
+    """Keep the fallback VoiceprintDB stub compatible with lifespan startup."""
+    from voiceprint_db import VoiceprintDB
+
+    init = VoiceprintDB.__init__
+    if "cohort_path" in inspect.signature(init).parameters:
+        return
+
+    def _compat_init(self, path, cohort_path=None, *args, **kwargs):
+        init(self, path)
+        self.path = path
+        self.cohort_path = cohort_path
+        self._cohort_path = cohort_path
+
+    monkeypatch.setattr(VoiceprintDB, "__init__", _compat_init)
 
 
 def test_rebuild_thread_alive_during_lifespan(app_client):
