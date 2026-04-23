@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VoScript 定位研究（扩展版）</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --bg-soft: #0c1728;
+      --panel: rgba(13, 24, 42, 0.9);
+      --panel-2: rgba(18, 33, 57, 0.88);
+      --line: rgba(118, 152, 214, 0.22);
+      --text: #e9eefb;
+      --muted: #9aabc7;
+      --accent: #6db8ff;
+      --accent-2: #7ef0c2;
+      --warn: #ffd36b;
+      --danger: #ff8f8f;
+      --ok: #8ef0a7;
+      --shadow: 0 24px 60px rgba(0,0,0,.35);
+      --radius: 18px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(72,122,255,.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(64,224,208,.12), transparent 26%),
+        linear-gradient(180deg, #06101c 0%, #08111e 45%, #07101c 100%);
+      line-height: 1.72;
+    }
+    .layout { display:grid; grid-template-columns: 280px minmax(0,1fr); min-height:100vh; }
+    .sidebar {
+      position: sticky; top:0; align-self:start; height:100vh; overflow:auto;
+      padding:28px 20px 28px 24px; background: rgba(4,10,18,.82);
+      border-right:1px solid var(--line); backdrop-filter: blur(12px);
+    }
+    .brand { margin-bottom:24px; padding-bottom:18px; border-bottom:1px solid var(--line); }
+    .eyebrow { font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent-2); margin-bottom:8px; }
+    .brand h1 { margin:0; font-size:22px; line-height:1.3; }
+    .brand p { margin:10px 0 0; color:var(--muted); font-size:13px; }
+    .nav a { display:block; color:var(--muted); text-decoration:none; padding:8px 10px; border-radius:10px; margin:4px 0; font-size:14px; }
+    .nav a:hover { background: rgba(109,184,255,.08); color:var(--text); }
+    .content { padding: 34px 40px 64px; }
+    .hero, .folio { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); margin-bottom:22px; padding:28px 30px; }
+    .hero h2, .folio h2 { margin:0 0 14px; font-size:30px; }
+    .hero p.lead { color:#d7e2f7; font-size:18px; margin:0; max-width:1000px; }
+    .meta { display:flex; flex-wrap:wrap; gap:12px; margin-top:18px; }
+    .pill { border:1px solid var(--line); color:var(--muted); padding:6px 10px; border-radius:999px; font-size:12px; }
+    .section-kicker { color:var(--accent-2); text-transform:uppercase; letter-spacing:.14em; font-size:12px; margin-bottom:10px; }
+    .callout { background:linear-gradient(135deg, rgba(109,184,255,.12), rgba(126,240,194,.06)); border:1px solid rgba(109,184,255,.18); padding:16px 18px; border-radius:14px; margin:16px 0; }
+    .warning { border-color: rgba(255,211,107,.28); background: rgba(255,211,107,.08); }
+    .danger { border-color: rgba(255,143,143,.30); background: rgba(255,143,143,.08); }
+    .grid-2 { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:16px; }
+    .grid-3 { display:grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap:16px; }
+    .card { background:var(--panel-2); border:1px solid var(--line); border-radius:16px; padding:18px; }
+    .card h3 { margin:0 0 10px; font-size:18px; }
+    .card p, .card li { color:#d6e0f4; }
+    .axis-list li { margin:8px 0; }
+    table { width:100%; border-collapse:collapse; font-size:14px; margin-top:12px; }
+    th, td { border:1px solid var(--line); padding:10px 10px; vertical-align:top; }
+    th { background: rgba(109,184,255,.08); text-align:left; }
+    .heat td strong { display:inline-block; min-width:28px; text-align:center; border-radius:8px; padding:4px 8px; }
+    .l3 { background: rgba(126,240,194,.18); color:#dffcf0; }
+    .l2 { background: rgba(109,184,255,.16); color:#e3f1ff; }
+    .l1 { background: rgba(255,211,107,.14); color:#fff2cc; }
+    .l0 { background: rgba(255,143,143,.12); color:#ffdede; }
+    .muted { color:var(--muted); }
+    ul { padding-left: 18px; }
+    .footer-note { color:var(--muted); font-size:13px; margin-top:12px; }
+    .quadrant-meta { display:grid; grid-template-columns: 1.1fr .9fr; gap:16px; margin-bottom:18px; }
+    .quadrant-box {
+      position: relative;
+      min-height: 640px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(to right, transparent 49.8%, rgba(255,255,255,.12) 49.8%, rgba(255,255,255,.12) 50.2%, transparent 50.2%),
+        linear-gradient(to top, transparent 49.8%, rgba(255,255,255,.12) 49.8%, rgba(255,255,255,.12) 50.2%, transparent 50.2%),
+        linear-gradient(180deg, rgba(109,184,255,.06), rgba(126,240,194,.04));
+      overflow: hidden;
+    }
+    .quadrant-box::before, .quadrant-box::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    .quadrant-box::before {
+      background:
+        linear-gradient(to right, rgba(109,184,255,.04), rgba(109,184,255,0) 18%),
+        linear-gradient(to top, rgba(126,240,194,.05), rgba(126,240,194,0) 22%);
+    }
+    .quad-label {
+      position:absolute;
+      font-size:12px;
+      color:var(--muted);
+      letter-spacing:.04em;
+      background: rgba(7,17,31,.72);
+      padding:4px 8px;
+      border-radius:999px;
+      border:1px solid rgba(118,152,214,.16);
+      backdrop-filter: blur(6px);
+    }
+    .quad-tl { top:14px; left:14px; }
+    .quad-tr { top:14px; right:14px; }
+    .quad-bl { bottom:14px; left:14px; }
+    .quad-br { bottom:14px; right:14px; }
+    .axis-title-x, .axis-title-y {
+      position:absolute;
+      font-size:13px;
+      color:#d9e8ff;
+      font-weight:600;
+      letter-spacing:.03em;
+      z-index:2;
+    }
+    .axis-title-x { left:50%; bottom:18px; transform:translateX(-50%); }
+    .axis-title-y { left:20px; top:50%; transform:translateY(-50%) rotate(-90deg); transform-origin:left top; }
+    .axis-arrow {
+      position:absolute;
+      width:18px;
+      height:18px;
+      border-top:2px solid rgba(255,255,255,.45);
+      border-right:2px solid rgba(255,255,255,.45);
+      z-index:2;
+    }
+    .axis-arrow-x { right:18px; bottom:56px; transform: rotate(45deg); }
+    .axis-arrow-y { left:54px; top:18px; transform: rotate(-45deg); }
+    .point {
+      position:absolute;
+      transform: translate(-50%, -50%);
+      max-width: 190px;
+      z-index:3;
+    }
+    .point .dot {
+      width:14px;
+      height:14px;
+      border-radius:999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(109,184,255,.14), 0 0 20px rgba(109,184,255,.35);
+      margin-bottom:8px;
+    }
+    .point .label {
+      display:inline-block;
+      padding:8px 10px;
+      border-radius:12px;
+      background: rgba(8,18,32,.92);
+      border:1px solid rgba(118,152,214,.24);
+      color:#eef5ff;
+      font-size:12px;
+      line-height:1.45;
+      box-shadow: 0 10px 24px rgba(0,0,0,.18);
+    }
+    .point.product .dot { background: var(--accent-2); box-shadow: 0 0 0 4px rgba(126,240,194,.14), 0 0 20px rgba(126,240,194,.28); }
+    .point.voscript .dot { background: #ffd36b; box-shadow: 0 0 0 5px rgba(255,211,107,.15), 0 0 24px rgba(255,211,107,.4); }
+    .point.vision .dot { background: #ff9cc2; box-shadow: 0 0 0 5px rgba(255,156,194,.15), 0 0 24px rgba(255,156,194,.38); }
+    .legend { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+    .legend span {
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      font-size:12px;
+      color:var(--muted);
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid var(--line);
+      background: rgba(255,255,255,.03);
+    }
+    .legend i { display:inline-block; width:10px; height:10px; border-radius:999px; }
+    @media (max-width: 1080px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: relative; height: auto; }
+      .content { padding: 20px; }
+      .grid-2, .grid-3, .quadrant-meta { grid-template-columns: 1fr; }
+      .quadrant-box { min-height: 860px; }
+      .point { max-width: 150px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="eyebrow">MAPLE™ · Research</div>
+        <h1>VoScript 定位研究</h1>
+        <p>产品轴 · 能力轴 · 空挡 · 伪需求 · 1.0 前后边界</p>
+      </div>
+      <nav class="nav">
+        <a href="#summary">执行摘要</a>
+        <a href="#product-axis">产品轴定义</a>
+        <a href="#feature-axis">能力轴定义</a>
+        <a href="#matrix">综合图谱</a>
+        <a href="#interpretation">竞品矩阵解读</a>
+        <a href="#quadrant">定位坐标轴</a>
+        <a href="#position">VoScript 当前定位</a>
+        <a href="#whitespace">空挡与非伪需求</a>
+        <a href="#sherpa">与 sherpa-onnx 的差异</a>
+        <a href="#scope">1.0 前后边界</a>
+        <a href="#strategy">战略建议 / 反模式</a>
+      </nav>
+    </aside>
+    <main class="content">
+      <section class="hero" id="summary">
+        <div class="section-kicker">执行摘要</div>
+        <h2>VoScript 不是在补“转录”空白，而是在补“身份感知的组织内语音后端”空白</h2>
+        <p class="lead">VoScript 当前最合理的位置，不是基础模型平台、不是通用 runtime、不是泛化会议 SaaS，而是固定团队/组织内部“长期声纹库 + 真名级会后逐字稿 + 工作流集成”的自托管身份感知语音后端。</p>
+        <div class="meta">
+          <span class="pill">当前主轴：Identity-aware backend</span>
+          <span class="pill">1.0 前：继续收口，不平台化</span>
+          <span class="pill">1.0 后：meeting speech backend vision</span>
+        </div>
+        <div class="callout warning">
+          <strong>关键判断：</strong>VoScript 填补的不是“没人做转录”的空挡；真正空挡只在固定人群高频录音整理场景中成立。若把它讲成所有转录用户都需要，就会滑向伪需求。
+        </div>
+      </section>
+
+      <section class="folio" id="product-axis">
+        <div class="section-kicker">产品轴</div>
+        <h2>先分清“它卖什么”，再比较“它会什么”</h2>
+        <div class="grid-2">
+          <div class="card"><h3>P1 基础模型 / 训练平台</h3><p>卖模型、训练、微调、评测、模型生态。代表：FunASR。</p></div>
+          <div class="card"><h3>P2 通用推理 runtime / SDK</h3><p>卖本地推理、多任务 runtime、跨平台 SDK。代表：sherpa-onnx。</p></div>
+          <div class="card"><h3>P3 流式增量转录引擎</h3><p>卖低延迟 partial / revised / final 和在线回看修正。代表：Whisper-Streaming。</p></div>
+          <div class="card"><h3>P4 实时 ASR 服务层</h3><p>卖实时 server、WebSocket/RTC、API 兼容层。代表：WhisperLiveKit、Deepgram、AssemblyAI、Gladia。</p></div>
+          <div class="card"><h3>P5 通用转录 API / 异步语音后端</h3><p>卖文件上传、异步 job、查询、导出。代表：Google STT、Azure Speech、腾讯云语音，以及 VoScript 的一部分。</p></div>
+          <div class="card"><h3>P6 身份感知语音后端</h3><p>卖长期 voiceprint memory、真名级归因、跨会话识别。VoScript 当前主定位。</p></div>
+          <div class="card"><h3>P7 会议/录音工作流后端</h3><p>卖录音整理、会后回看、导出、工作流接入。VoScript 当前次定位 / 1.0 前主收口方向。</p></div>
+          <div class="card"><h3>P8 会议 SaaS / 会议纪要产品</h3><p>卖终端产品体验、协作、纪要、待办、组织工作台。代表：飞书妙记、腾讯会议AI、讯飞听见、通义听悟、Otter、Fireflies、Notta。</p></div>
+        </div>
+      </section>
+
+      <section class="folio" id="feature-axis">
+        <div class="section-kicker">能力轴</div>
+        <h2>能力轴决定“它到底做到哪一层”</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>语音链能力</h3>
+            <ul class="axis-list">
+              <li>batch 文件转录</li>
+              <li>streaming / live session</li>
+              <li>partial / revised / final</li>
+              <li>word-level timestamps / alignment</li>
+              <li>diarization</li>
+              <li>speaker memory / voiceprint library</li>
+              <li>true-name attribution</li>
+              <li>enroll / update / delete / rebuild</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>产品后端能力</h3>
+            <ul class="axis-list">
+              <li>async job / polling</li>
+              <li>export / artifacts</li>
+              <li>Web UI / end-user shell</li>
+              <li>HTTP API / SDK / WebSocket</li>
+              <li>self-hosted / on-prem</li>
+              <li>cloud / SaaS delivery</li>
+              <li>transcript state machine</li>
+              <li>workflow integration / orchestration</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="folio" id="matrix">
+        <div class="section-kicker">综合图谱</div>
+        <h2>产品轴 × 能力轴热力矩阵</h2>
+        <p class="muted">强 = ★★★，中 = ★★，弱/局部 = ★，非主轴 = -</p>
+        <table class="heat">
+          <thead>
+            <tr>
+              <th>对象</th><th>产品轴</th><th>Batch</th><th>Async</th><th>Streaming</th><th>Partial/Rev/Final</th><th>Word TS</th><th>Diarization</th><th>Speaker Memory</th><th>真名归因</th><th>Export</th><th>UI</th><th>API/WS/SDK</th><th>自托管</th><th>SaaS/Cloud</th><th>Workflow</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>FunASR</td><td>P1</td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l1">★</strong></td></tr>
+            <tr><td>sherpa-onnx</td><td>P2</td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l1">★</strong></td></tr>
+            <tr><td>NVIDIA Riva</td><td>P2/P4</td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l2">★★</strong></td></tr>
+            <tr><td>Azure AI Speech</td><td>P5</td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td></tr>
+            <tr><td>Google Cloud STT</td><td>P5</td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td></tr>
+            <tr><td>Vertex AI Speech</td><td>P5</td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l0">-</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td></tr>
+            <tr><td>Whisper-Streaming</td><td>P3</td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l0">-</strong></td><td><strong class="l0">-</strong></td><td><strong class="l0">-</strong></td><td><strong class="l0">-</strong></td><td><strong class="l1">★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l0">-</strong></td></tr>
+            <tr><td>WhisperLiveKit</td><td>P4</td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td></tr>
+            <tr><td>Deepgram / AssemblyAI / Gladia</td><td>P4</td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td></tr>
+            <tr><td>讯飞听见 / 通义听悟</td><td>P8</td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td></tr>
+            <tr><td>飞书 / 腾讯会议 / 钉钉纪要</td><td>P8</td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td></tr>
+            <tr><td>Otter / Fireflies / Notta</td><td>P8</td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td></tr>
+            <tr><td>PLAUD / OpenPlaud</td><td>P8</td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l0">-</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td></tr>
+            <tr><td>VoScript（当前）</td><td>P6 + P7</td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l0">-</strong></td><td><strong class="l3">★★★</strong></td></tr>
+            <tr><td>VoScript（post-1.0）</td><td>P7 → meeting speech backend</td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l2">★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l3">★★★</strong></td><td><strong class="l1">★</strong></td><td><strong class="l3">★★★</strong></td></tr>
+          </tbody>
+        </table>
+        <div class="footer-note">OpenTranscribe 公开资料不足，因此未放进热力矩阵主表；它更适合作为“转录平台信号”，而非成熟核心对标。</div>
+      </section>
+
+      <section class="folio" id="interpretation">
+        <div class="section-kicker">矩阵解读</div>
+        <h2>VoScript 处在两类成熟产品之间的缝隙</h2>
+        <div class="grid-3">
+          <div class="card"><h3>左侧：基础平台</h3><p>FunASR、sherpa-onnx、Riva、Azure、Google 这类对象强在能力面与底层分发，不以“长期实名 speaker + 会后整理工作流”作为主叙事。</p></div>
+          <div class="card"><h3>中间：实时服务</h3><p>Whisper-Streaming、WhisperLiveKit、Deepgram、AssemblyAI、Gladia 强在 streaming、partial/final、WebSocket 和实时会话，不主打组织内长期 speaker memory。</p></div>
+          <div class="card"><h3>右侧：会议产品壳</h3><p>飞书、腾讯会议、钉钉、Otter、Fireflies、Notta、讯飞听见、通义听悟更像终端产品与协作体验，通常不是自托管后端，也不以持久化声纹库为主卖点。</p></div>
+        </div>
+        <div class="callout">
+          <strong>定位缝隙：</strong>VoScript 最有机会占住的是“模型能力层”与“完整会议 SaaS”之间的中间层：既比通用转录 API 更懂身份与工作流，又比会议 SaaS 更可自托管、更可嵌入、更像可复用后端。
+        </div>
+      </section>
+
+      <section class="folio" id="quadrant">
+        <div class="section-kicker">定位坐标轴</div>
+        <h2>二维坐标轴比一维产品轴更能看清 VoScript 身位</h2>
+        <div class="quadrant-meta">
+          <div class="card">
+            <h3>坐标定义</h3>
+            <ul>
+              <li><strong>X 轴 = 从基础能力层 → 产品工作流层</strong></li>
+              <li><strong>Y 轴 = 从匿名转录/通用能力 → 身份感知/长期记忆</strong></li>
+            </ul>
+            <p>这个坐标不是比较“谁更强”，而是比较“谁站在哪一层卖什么”。因此 VoScript 不该再被误投到基础模型、通用 runtime 或泛会议 SaaS 身位。</p>
+          </div>
+          <div class="card">
+            <h3>一句话结论</h3>
+            <p><strong>VoScript 当前身位 = 靠右上，但仍低于完整会议产品层；更准确是“身份感知语音后端”。</strong></p>
+            <p class="muted">post-1.0 的方向应该是继续向右、略向上：变成更强的工作流后端 / meeting speech backend，而不是向基础模型平台、通用 runtime 或泛会议 SaaS 漂移。</p>
+          </div>
+        </div>
+        <div class="quadrant-box">
+          <div class="quad-label quad-tl">身份高，但工作流不强</div>
+          <div class="quad-label quad-tr">身份高 + 工作流强</div>
+          <div class="quad-label quad-bl">基础能力 / 匿名转录</div>
+          <div class="quad-label quad-br">产品工作流强，但身份多来自账号体系</div>
+          <div class="axis-title-x">X 轴：基础能力层 → 产品工作流层</div>
+          <div class="axis-title-y">Y 轴：匿名转录/通用能力 → 身份感知/长期记忆</div>
+          <div class="axis-arrow axis-arrow-x"></div>
+          <div class="axis-arrow axis-arrow-y"></div>
+
+          <div class="point" style="left:20%; top:74%;">
+            <div class="dot"></div>
+            <div class="label">FunASR<br><span class="muted">基础模型 / 训练平台</span></div>
+          </div>
+          <div class="point" style="left:12%; top:82%;">
+            <div class="dot"></div>
+            <div class="label">sherpa-onnx<br><span class="muted">通用 runtime / SDK</span></div>
+          </div>
+          <div class="point" style="left:31%; top:79%;">
+            <div class="dot"></div>
+            <div class="label">Whisper-Streaming<br><span class="muted">流式增量引擎</span></div>
+          </div>
+          <div class="point" style="left:52%; top:63%;">
+            <div class="dot"></div>
+            <div class="label">WhisperLiveKit<br><span class="muted">实时 ASR 服务层</span></div>
+          </div>
+          <div class="point" style="left:63%; top:52%;">
+            <div class="dot"></div>
+            <div class="label">Deepgram / AssemblyAI / Gladia<br><span class="muted">产品化 API 强，长期身份不是主轴</span></div>
+          </div>
+          <div class="point product" style="left:79%; top:45%;">
+            <div class="dot"></div>
+            <div class="label">飞书妙记 / 腾讯会议 AI / 钉钉会议纪要<br><span class="muted">工作流强，实名多来自组织关系</span></div>
+          </div>
+          <div class="point product" style="left:74%; top:39%;">
+            <div class="dot"></div>
+            <div class="label">讯飞听见 / 通义听悟<br><span class="muted">会议纪要产品，身份能力有限</span></div>
+          </div>
+          <div class="point product" style="left:86%; top:28%;">
+            <div class="dot"></div>
+            <div class="label">Otter / Fireflies / Notta<br><span class="muted">典型会议纪要 SaaS</span></div>
+          </div>
+          <div class="point voscript" style="left:70%; top:22%;">
+            <div class="dot"></div>
+            <div class="label">VoScript 当前<br><span class="muted">靠右上，但仍低于完整会议产品层</span></div>
+          </div>
+          <div class="point vision" style="left:78%; top:16%;">
+            <div class="dot"></div>
+            <div class="label">VoScript post-1.0<br><span class="muted">向更强 workflow backend / meeting speech backend 移动</span></div>
+          </div>
+        </div>
+        <div class="legend">
+          <span><i style="background:#6db8ff"></i>基础能力 / API / runtime 类</span>
+          <span><i style="background:#7ef0c2"></i>会议纪要产品 / SaaS 类</span>
+          <span><i style="background:#ffd36b"></i>VoScript 当前</span>
+          <span><i style="background:#ff9cc2"></i>VoScript post-1.0 目标</span>
+        </div>
+        <div class="grid-2" style="margin-top:16px;">
+          <div class="card">
+            <h3>不该去的身位</h3>
+            <ul>
+              <li>回到左下，变成基础模型平台</li>
+              <li>停在左中，变成通用 runtime / SDK</li>
+              <li>只补实时后停在中部，变成普通实时 ASR 服务层</li>
+              <li>一路漂到最右上外壳，变成泛会议 SaaS / 纪要产品</li>
+              <li>扩成“什么语音任务都做”的通用中台</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>相对位置判断</h3>
+            <ul>
+              <li>左下：FunASR、sherpa-onnx、Whisper-Streaming</li>
+              <li>中右偏上：WhisperLiveKit、Deepgram / AssemblyAI / Gladia</li>
+              <li>右侧偏上：飞书妙记 / 腾讯会议 AI / 钉钉会议纪要、讯飞听见 / 通义听悟</li>
+              <li>右上：Otter / Fireflies / Notta</li>
+              <li><strong>VoScript 当前：右上内侧的身份感知语音后端</strong></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="folio" id="position">
+        <div class="section-kicker">当前定位</div>
+        <h2>VoScript 当前最准确的表达</h2>
+        <div class="callout"><strong>VoScript = self-hosted、identity-aware 的 meeting / recording transcription backend。</strong></div>
+        <ul>
+          <li><strong>self-hosted</strong>：强调部署边界、数据控制与组织级可落地性</li>
+          <li><strong>identity-aware</strong>：强调不只是识别内容，更重视“是谁说的”</li>
+          <li><strong>meeting / recording</strong>：强调围绕录音整理场景，而不是覆盖所有语音任务</li>
+          <li><strong>backend</strong>：强调它是工作流与产品的后端能力层，不是纯 SDK，也不是完整会议 SaaS</li>
+        </ul>
+        <div class="grid-2">
+          <div class="card"><h3>现在最强的主轴</h3><ul><li>Identity-aware speech backend</li><li>General transcription API backend</li><li>Meeting / recording workflow backend</li></ul></div>
+          <div class="card"><h3>明确不是当前主轴</h3><ul><li>通用训练平台</li><li>通用 runtime SDK</li><li>成熟实时引擎</li><li>完整会议协作 SaaS</li></ul></div>
+        </div>
+      </section>
+
+      <section class="folio" id="whitespace">
+        <div class="section-kicker">空挡与伪需求</div>
+        <h2>VoScript 填补的是“组合空挡”，不是单点空挡</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>它填补的空挡</h3>
+            <ul>
+              <li>长期声纹库</li>
+              <li>真名级会后逐字稿</li>
+              <li>组织内持续复用</li>
+              <li>异步 job + HTTP API</li>
+              <li>可嵌入现有知识库/纪要/协作系统</li>
+            </ul>
+          </div>
+          <div class="card danger">
+            <h3>伪需求风险</h3>
+            <ul>
+              <li>把它讲成“所有转录用户都需要”</li>
+              <li>把它讲成“更好的转录”而不是“更少的人名修正成本”</li>
+              <li>忽略目标用户必须是固定团队/组织</li>
+              <li>忽略维护 speaker 库本身有门槛</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout warning"><strong>强需求前提：</strong>同一批人反复开会、反复录音、反复整理；如果没有这个前提，VoScript 的长期声纹库价值会迅速下降。</div>
+      </section>
+
+      <section class="folio" id="sherpa">
+        <div class="section-kicker">差异判断</div>
+        <h2>VoScript 与 sherpa-onnx 的区别不在“功能多少”，而在抽象层不同</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>sherpa-onnx 更像什么</h3>
+            <ul>
+              <li>通用语音 runtime / 多任务基础平台</li>
+              <li>本地推理、跨设备、跨语言绑定</li>
+              <li>关注 task / runtime / deployment target</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>VoScript 更像什么</h3>
+            <ul>
+              <li>会议/录音整理场景的身份感知语音后端</li>
+              <li>关注 transcription job / enrolled speaker / voiceprint library / named transcript</li>
+              <li>关注长期身份、结果沉淀、工作流集成</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout"><strong>一句话：</strong>sherpa-onnx 更偏“通用语音 runtime / 多任务基础平台”；VoScript 更偏“会议与录音场景的应用后端”。</div>
+      </section>
+
+      <section class="folio" id="scope">
+        <div class="section-kicker">1.0 前后边界</div>
+        <h2>1.0 前先收口，1.0 后再扩大</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>1.0 前</h3>
+            <ul>
+              <li>继续把 VoScript 收到稳定</li>
+              <li>收口目录架构、contract、artifact、speaker 事实源</li>
+              <li>收口 backend interface、scheduling / observability</li>
+              <li>不把项目写成通用语音平台</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>1.0 后</h3>
+            <ul>
+              <li>可插拔推理后端</li>
+              <li>batch / streaming 协议统一</li>
+              <li>speaker memory</li>
+              <li>transcript state machine</li>
+              <li>orchestration / product API</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout warning"><strong>但即便是 post-1.0，也不应变成：</strong>另一个 FunASR、另一个 sherpa-onnx、另一个通用训练平台、另一个 model zoo、另一个全任务语音中台。</div>
+      </section>
+
+      <section class="folio" id="strategy">
+        <div class="section-kicker">战略建议</div>
+        <h2>应该继续做什么，不要变成什么</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>应该继续做的</h3>
+            <ul>
+              <li>把 VoScript 收到 1.0</li>
+              <li>强化 identity-aware 这条主轴</li>
+              <li>把 HTTP API + async job + artifacts + speaker memory 做成稳定后端</li>
+              <li>1.0 后再考虑 streaming / transcript state machine / meeting speech backend</li>
+            </ul>
+          </div>
+          <div class="card danger">
+            <h3>不要变成什么</h3>
+            <ul>
+              <li>另一个 FunASR</li>
+              <li>另一个 sherpa-onnx</li>
+              <li>泛化“什么转录都做”的平台</li>
+              <li>为了追实时而丢掉 identity-aware 护城河</li>
+              <li>为了看起来更大而把需求讲成泛需求</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout"><strong>最终一句话：</strong>VoScript 最合理的长期路线，不是成为“最全的语音平台”，而是成为固定团队/组织内部，围绕会议与录音整理场景的、可自托管的身份感知语音后端。</div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

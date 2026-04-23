@@ -9,15 +9,17 @@
 - Format: `MAJOR.MINOR.PATCH` — bump patch for fixes/small additions, minor for new features, major for breaking changes
 - Version in `app/main.py` and `doc/changelog.*.md` must stay in sync
 
-## Structure
-```
-app/             FastAPI service (Docker image)
-doc/             Docs — every file has zh + en counterpart
-tests/e2e/       E2E tests against live server
-.github/workflows/
-  ci.yml         lint + test + security-scan
-  release.yml    Docker build+push on tag or workflow_dispatch
-```
+## Planning Scope
+- For `v0.7.2`, keep documentation focused on roadmap structure, compatibility boundaries, and product positioning.
+- Current pre-1.0 product narrative remains: self-hosted GPU transcription service + persistent voiceprints + HTTP API.
+- Post-1.0 vision belongs in [`roadmap/vision-post-1.0.md`](./roadmap/vision-post-1.0.md), not in current-version scope statements.
+- Future architecture reshaping, pipeline canonicalization, provider/plugin layering, and other large structural plans belong to later roadmap stages and must not be written here as `v0.7.2` committed scope.
+
+## Documentation Boundaries
+- `README.md` and `README.en.md` may add minimal route guidance so readers can find the roadmap and long-term vision quickly.
+- `roadmap/` is the canonical place for version planning, compatibility boundaries, and post-1.0 direction.
+- Do not rewrite the current product positioning inside collaboration docs. If future scope needs to be described, link to the relevant roadmap document instead of restating it here as an active commitment.
+- Keep pre-1.0 commitments, post-1.0 vision, and compatibility policy clearly separated.
 
 ## Docs
 - Update zh and en together

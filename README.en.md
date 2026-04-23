@@ -115,6 +115,18 @@ Full technical details → [`doc/benchmarks.en.md`](./doc/benchmarks.en.md)
 
 ---
 
+## 1.0 and what comes next
+
+Before 1.0, the priority is to make VoScript's current core capabilities stable, reliable, and easy to deploy, and to do the transcription and voiceprint workflow well.
+
+After 1.0, VoScript will keep expanding around meeting and recording use cases and grow into a more complete meeting / recording speech backend.
+
+The focus will remain an application backend that is useful in real recording workflows and dependable over time.
+
+Roadmap overview: [`roadmap/README.md`](./roadmap/README.md). Long-term vision: [`roadmap/vision-post-1.0.md`](./roadmap/vision-post-1.0.md).
+
+---
+
 ## Documentation
 
 | Topic | 中文 | English |
@@ -127,6 +139,8 @@ Full technical details → [`doc/benchmarks.en.md`](./doc/benchmarks.en.md)
 | Security policy | [security.zh.md](./doc/security.zh.md) | [security.en.md](./doc/security.en.md) |
 | Benchmarks | [benchmarks.zh.md](./doc/benchmarks.zh.md) | [benchmarks.en.md](./doc/benchmarks.en.md) |
 | Changelog | [changelog.zh.md](./doc/changelog.zh.md) | [changelog.en.md](./doc/changelog.en.md) |
+| Roadmap | [roadmap/README.md](./roadmap/README.md) | [roadmap/README.md](./roadmap/README.md) |
+| Long-term vision | [vision-post-1.0.md](./roadmap/vision-post-1.0.md) | [vision-post-1.0.md](./roadmap/vision-post-1.0.md) |
 
 ---
 
