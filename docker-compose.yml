@@ -48,6 +48,10 @@ services:
       - VOICEPRINT_THRESHOLD=${VOICEPRINT_THRESHOLD:-0.75}
       # HuggingFace API endpoint.  Override to use a mirror in restricted regions.
       - HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}
+      # Avoid hf-xet/CAS downloads by default; cached files are preferred first.
+      - HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}
+      # Keep cold-start metadata checks short so existing cache is used quickly.
+      - HF_HUB_ETAG_TIMEOUT=${HF_HUB_ETAG_TIMEOUT:-3}
     healthcheck:
       test:
         [

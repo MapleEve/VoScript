@@ -52,7 +52,9 @@ COPY --chown=app:app . .
 ENV HF_HOME=/cache \
     HUGGINGFACE_HUB_CACHE=/cache \
     TORCH_HOME=/cache/torch \
-    XDG_CACHE_HOME=/cache
+    XDG_CACHE_HOME=/cache \
+    HF_HUB_DISABLE_XET=1 \
+    HF_HUB_ETAG_TIMEOUT=3
 
 USER app
 

@@ -2,6 +2,18 @@
 
 [简体中文](./changelog.zh.md) | **English**
 
+## 0.7.3 — Hugging Face cache-first cold-start hardening (2026-04-24)
+
+### Bug Fixes
+
+- **Diarization cold-start resilience**: pyannote diarization and WeSpeaker embedding loading now check the existing Hugging Face snapshot cache first and load from it when complete, avoiding unnecessary network downloads on warm deployments.
+- **Xet/CAS download bypass by default**: the runtime now sets `HF_HUB_DISABLE_XET=1` before importing Hugging Face Hub clients unless operators explicitly override it. This avoids the hf-xet/CAS bridge path that can fail with TLS EOF errors in some remote environments.
+- **Faster cache fallback**: Docker and compose defaults include `HF_HUB_ETAG_TIMEOUT=3`, so Hub metadata checks fall back to local cache more quickly when the network is slow or unreliable.
+
+### Deployment
+
+- Rebuild the container image or restart with the new environment defaults. Existing model cache volumes remain compatible.
+
 ## 0.7.2 — Architecture foundation + stability hardening (2026-04-24)
 
 ### Architecture

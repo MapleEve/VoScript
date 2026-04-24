@@ -16,6 +16,10 @@ from typing import Any
 
 import torch
 
+from infra.huggingface_models import (
+    configure_huggingface_runtime,
+    hf_model_reference,
+)
 from providers.asr import transcribe_audio
 from providers.diarization import align_diarized_segments, run_pyannote_diarization
 from providers.embedding import extract_embeddings_for_turns
@@ -24,6 +28,7 @@ from .contracts import PipelineRequest
 from .runner import PipelineRunner
 
 logger = logging.getLogger(__name__)
+configure_huggingface_runtime()
 
 
 class TranscriptionPipeline:
@@ -85,9 +90,14 @@ class TranscriptionPipeline:
         if self._diarization is None:
             from pyannote.audio import Pipeline as PyannotePipeline
 
-            logger.info("Loading pyannote speaker-diarization-3.1")
-            self._diarization = PyannotePipeline.from_pretrained(
+            model_ref = hf_model_reference(
                 "pyannote/speaker-diarization-3.1",
+                token=self.hf_token,
+                purpose="pyannote diarization",
+            )
+            logger.info("Loading pyannote diarization model")
+            self._diarization = PyannotePipeline.from_pretrained(
+                model_ref,
                 use_auth_token=self.hf_token,
             )
             _dev = self.device if ":" in self.device else "cuda:0"
@@ -110,9 +120,14 @@ class TranscriptionPipeline:
         if self._embedding_model is None:
             from pyannote.audio import Inference, Model
 
-            logger.info("Loading WeSpeaker ResNet34 speaker encoder")
-            model = Model.from_pretrained(
+            model_ref = hf_model_reference(
                 "pyannote/wespeaker-voxceleb-resnet34-LM",
+                token=self.hf_token,
+                purpose="WeSpeaker speaker encoder",
+            )
+            logger.info("Loading WeSpeaker speaker encoder")
+            model = Model.from_pretrained(
+                model_ref,
                 use_auth_token=self.hf_token,
             )
             model = model.to(torch.device(self.device))

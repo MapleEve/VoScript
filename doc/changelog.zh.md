@@ -2,6 +2,18 @@
 
 **简体中文** | [English](./changelog.en.md)
 
+## 0.7.3 — Hugging Face 缓存优先冷启动加固 (2026-04-24)
+
+### Bug 修复
+
+- **Diarization 冷启动更稳**：pyannote 说话人分离和 WeSpeaker 声纹模型加载现在会先检查已有 Hugging Face snapshot 缓存，缓存完整时直接从本地加载，避免已部署环境重复联网下载。
+- **默认绕开 Xet/CAS 下载链路**：运行时在导入 Hugging Face Hub 客户端前默认设置 `HF_HUB_DISABLE_XET=1`，除非运维显式覆盖。这样可避开部分远端环境中 hf-xet/CAS bridge 触发的 TLS EOF 失败。
+- **更快回退到本地缓存**：Docker 和 compose 默认加入 `HF_HUB_ETAG_TIMEOUT=3`，网络慢或不稳定时 Hugging Face Hub 的元数据检查会更快回退到本地缓存。
+
+### 部署
+
+- 需要重建容器镜像，或在远端环境补齐新的环境变量后重启。已有模型缓存卷保持兼容。
+
 ## 0.7.2 — 架构基础铺垫 + 稳定性加固 (2026-04-24)
 
 ### 架构
