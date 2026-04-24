@@ -10,7 +10,7 @@
 
 | 版本 | 阶段定位 | 关键词 |
 | --- | --- | --- |
-| v0.7.2 | 当前收口起点 | planning 对齐、兼容性冻结、roadmap 体系补齐 |
+| v0.7.2 | 当前收口起点 | planning 对齐、兼容性冻结、roadmap 体系补齐、architecture foundation |
 | v0.8.0 | 架构边界整理 | pipeline stage slot、provider 插拔、结果协议继续稳定 |
 | v0.9.0 | 产品协议稳定 | batch/job/transcript 语义收敛，面向接入方稳定 |
 | v0.9.5 | 1.0 冻结预演 | upgrade path、默认运维姿势、回归矩阵 |
@@ -27,6 +27,12 @@
 - 明确 VoScript 长期仍是会议/录音场景应用后端
 - 明确不会在 1.0 前扩成通用语音 runtime / model zoo / 训练平台
 - README 补充路线说明，但不改当前产品叙事
+
+### 0.7.2-c Architecture foundation
+- 将 pipeline、provider、infra、application、voiceprints 的基础边界落到代码里
+- 保持现有 HTTP API、`status.json`、`result.json` 和 voiceprints 持久化语义兼容
+- 记录当前 GPU 串行范围作为稳定性优先的性能取舍；CPU/IO/GPU stage 锁边界拆分延后到 v0.8
+- 不在 v0.7.2 公开 provider preset / API 级 provider 选择、streaming 或 speaker memory 产品化承诺
 
 ## v0.8.0
 
