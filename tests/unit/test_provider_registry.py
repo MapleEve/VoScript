@@ -211,6 +211,13 @@ def test_default_asr_provider_uses_pipeline_whisper_resource():
     assert result.transcription_result == {
         "segments": [{"start": 0.0, "end": 1.25, "text": "hello"}],
         "language": "zh",
+        "hallucination_guard": {
+            "status": "pass",
+            "input_segment_count": 1,
+            "output_segment_count": 1,
+            "removed_segment_count": 0,
+            "removed_duration": 0,
+        },
     }
     assert calls == [
         (
@@ -221,6 +228,7 @@ def test_default_asr_provider_uses_pipeline_whisper_resource():
                 "vad_filter": True,
                 "vad_parameters": {"min_silence_duration_ms": 500},
                 "initial_prompt": None,
+                "condition_on_previous_text": False,
                 "no_repeat_ngram_size": 4,
             },
         )

@@ -108,6 +108,10 @@ class InMemoryArtifactsProvider:
                 "no_repeat_ngram_size": context.request.no_repeat_ngram_size or 0,
             },
         }
+        if context.transcription_result is not None:
+            guard_report = context.transcription_result.get("hallucination_guard")
+            if guard_report is not None:
+                transcription["asr_hallucination_guard"] = guard_report
         if warning is not None:
             transcription["warning"] = warning
         return transcription

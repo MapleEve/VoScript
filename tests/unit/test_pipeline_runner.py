@@ -1,4 +1,5 @@
 """Unit tests for stable pipeline stage slots and runner orchestration."""
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -329,6 +330,13 @@ def test_runner_persists_artifacts_and_cleans_generated_audio(tmp_path):
                 transcription_result={
                     "segments": [{"start": 0.0, "end": 1.0, "text": "stub"}],
                     "language": "zh",
+                    "hallucination_guard": {
+                        "status": "filtered",
+                        "input_segment_count": 3,
+                        "output_segment_count": 1,
+                        "removed_segment_count": 2,
+                        "removed_duration": 128.0,
+                    },
                 }
             )
 
@@ -416,9 +424,14 @@ def test_runner_persists_artifacts_and_cleans_generated_audio(tmp_path):
         ("voiceprint_match", ("SPEAKER_00",)),
     ]
     assert result["transcription"]["id"] == "tr_demo"
+    assert result["transcription"]["asr_hallucination_guard"]["status"] == "filtered"
+    assert result["transcription"]["asr_hallucination_guard"]["removed_duration"] == 128.0
+    assert context.metadata["asr"]["hallucination_guard"]["removed_segment_count"] == 2
     assert result["transcription"]["speaker_map"]["SPEAKER_00"]["matched_id"] == "spk_demo"
     assert result["artifact_paths"]["result_path"] == str(result_path)
     assert result_path.exists()
+    persisted_result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert persisted_result["asr_hallucination_guard"]["removed_segment_count"] == 2
     assert emb_path.exists()
     assert not audio_path.with_suffix(".wav").exists()
     assert not audio_path.with_suffix(".denoised.wav").exists()
