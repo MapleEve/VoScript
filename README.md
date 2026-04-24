@@ -117,13 +117,7 @@ docker compose up -d --build
 
 ## 1.0 与后续方向
 
-1.0 之前，我们会先把 VoScript 的当前核心能力做到稳定、可靠、易部署，让它把该做好的转录与声纹识别场景先做好。
-
-1.0 之后，VoScript 会继续沿着会议与录音场景扩展，逐步成为更完整的 meeting / recording speech backend。
-
-它的重点仍然会是对真实录音工作流有用、能长期运行的应用后端。
-
-路线总览见 [`roadmap/README.md`](./roadmap/README.md)，长期方向见 [`roadmap/vision-post-1.0.md`](./roadmap/vision-post-1.0.md)。
+长期愿景：VoScript 会先把自托管转录和声纹识别做稳，并持续服务真实会议与录音工作流。
 
 ---
 
@@ -139,8 +133,6 @@ docker compose up -d --build
 | 安全策略 | [security.zh.md](./doc/security.zh.md) | [security.en.md](./doc/security.en.md) |
 | Benchmarks | [benchmarks.zh.md](./doc/benchmarks.zh.md) | [benchmarks.en.md](./doc/benchmarks.en.md) |
 | 更新日志 | [changelog.zh.md](./doc/changelog.zh.md) | [changelog.en.md](./doc/changelog.en.md) |
-| 路线图 | [roadmap/README.md](./roadmap/README.md) | [roadmap/README.md](./roadmap/README.md) |
-| 长期方向 | [vision-post-1.0.md](./roadmap/vision-post-1.0.md) | [vision-post-1.0.md](./roadmap/vision-post-1.0.md) |
 
 ---
 
