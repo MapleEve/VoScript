@@ -31,20 +31,47 @@ from .runner import PipelineRunner
 logger = logging.getLogger(__name__)
 configure_huggingface_runtime()
 
+_TRUSTED_PYANNOTE_TASK_GLOBAL_NAMES = (
+    "Problem",
+    "Specifications",
+    "Resolution",
+)
 
-def _trusted_pyannote_checkpoint_context():
-    """Allow the one legacy object type present in trusted pyannote checkpoints."""
 
-    serialization = getattr(torch, "serialization", None)
-    safe_globals = getattr(serialization, "safe_globals", None)
+def _trusted_pyannote_checkpoint_globals() -> list[type]:
+    """Return object types trusted for pyannote checkpoint loading."""
+
     torch_version_type = getattr(
         getattr(torch, "torch_version", None),
         "TorchVersion",
         None,
     )
-    if safe_globals is None or torch_version_type is None:
+    trusted_globals = []
+    if torch_version_type is not None:
+        trusted_globals.append(torch_version_type)
+
+    try:
+        import pyannote.audio.core.task as pyannote_task
+    except ImportError:
+        pyannote_task = None
+    if pyannote_task is not None:
+        for name in _TRUSTED_PYANNOTE_TASK_GLOBAL_NAMES:
+            trusted_type = getattr(pyannote_task, name, None)
+            if trusted_type is not None:
+                trusted_globals.append(trusted_type)
+
+    return trusted_globals
+
+
+def _trusted_pyannote_checkpoint_context():
+    """Scope the trusted object allowlist to pyannote checkpoint loads only."""
+
+    serialization = getattr(torch, "serialization", None)
+    safe_globals = getattr(serialization, "safe_globals", None)
+    trusted_globals = _trusted_pyannote_checkpoint_globals()
+    if safe_globals is None or not trusted_globals:
         return nullcontext()
-    return safe_globals([torch_version_type])
+    return safe_globals(trusted_globals)
 
 
 def _load_trusted_pyannote_model(
