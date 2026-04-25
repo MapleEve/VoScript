@@ -31,6 +31,12 @@ from .runner import PipelineRunner
 logger = logging.getLogger(__name__)
 configure_huggingface_runtime()
 
+_TRUSTED_PYANNOTE_TASK_GLOBAL_NAMES = (
+    "Problem",
+    "Specifications",
+    "Resolution",
+)
+
 
 def _trusted_pyannote_checkpoint_globals() -> list[type]:
     """Return object types trusted for pyannote checkpoint loading."""
@@ -45,14 +51,14 @@ def _trusted_pyannote_checkpoint_globals() -> list[type]:
         trusted_globals.append(torch_version_type)
 
     try:
-        from pyannote.audio.core.task import Problem, Specifications
+        import pyannote.audio.core.task as pyannote_task
     except ImportError:
-        Problem = None
-        Specifications = None
-    if Problem is not None:
-        trusted_globals.append(Problem)
-    if Specifications is not None:
-        trusted_globals.append(Specifications)
+        pyannote_task = None
+    if pyannote_task is not None:
+        for name in _TRUSTED_PYANNOTE_TASK_GLOBAL_NAMES:
+            trusted_type = getattr(pyannote_task, name, None)
+            if trusted_type is not None:
+                trusted_globals.append(trusted_type)
 
     return trusted_globals
 

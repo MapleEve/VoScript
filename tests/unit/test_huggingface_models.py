@@ -152,8 +152,12 @@ def test_diarization_loader_scopes_torch26_safe_globals(monkeypatch, tmp_path):
     class Specifications:
         pass
 
+    class Resolution:
+        pass
+
     pyannote_audio_core_task.Problem = Problem
     pyannote_audio_core_task.Specifications = Specifications
+    pyannote_audio_core_task.Resolution = Resolution
     monkeypatch.setitem(sys.modules, "pyannote.audio.core", pyannote_audio_core)
     monkeypatch.setitem(
         sys.modules,
@@ -219,7 +223,7 @@ def test_diarization_loader_scopes_torch26_safe_globals(monkeypatch, tmp_path):
 
     assert pipeline.diarization.__class__ is FakeLoadedPipeline
     assert events == [
-        ("globals", (TorchVersion, Problem, Specifications)),
+        ("globals", (TorchVersion, Problem, Specifications, Resolution)),
         ("enter",),
         ("load", cached_snapshot, "test-token"),
         ("exit", None),
