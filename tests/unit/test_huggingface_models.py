@@ -143,6 +143,19 @@ def test_diarization_loader_scopes_torch26_safe_globals(monkeypatch, tmp_path):
     torch_version = ModuleType("torch.torch_version")
     torch_version.TorchVersion = TorchVersion
     torch_serialization = ModuleType("torch.serialization")
+    pyannote_audio_core = ModuleType("pyannote.audio.core")
+    pyannote_audio_core_task = ModuleType("pyannote.audio.core.task")
+
+    class Specifications:
+        pass
+
+    pyannote_audio_core_task.Specifications = Specifications
+    monkeypatch.setitem(sys.modules, "pyannote.audio.core", pyannote_audio_core)
+    monkeypatch.setitem(
+        sys.modules,
+        "pyannote.audio.core.task",
+        pyannote_audio_core_task,
+    )
     monkeypatch.setattr(
         orchestrator.torch,
         "torch_version",
@@ -202,11 +215,34 @@ def test_diarization_loader_scopes_torch26_safe_globals(monkeypatch, tmp_path):
 
     assert pipeline.diarization.__class__ is FakeLoadedPipeline
     assert events == [
-        ("globals", (TorchVersion,)),
+        ("globals", (TorchVersion, Specifications)),
         ("enter",),
         ("load", cached_snapshot, "test-token"),
         ("exit", None),
     ]
+
+
+def test_pyannote_safe_globals_falls_back_when_specifications_unavailable(
+    monkeypatch,
+):
+    _stub_numpy(monkeypatch)
+    import pipeline.orchestrator as orchestrator
+
+    class TorchVersion:
+        pass
+
+    torch_version = ModuleType("torch.torch_version")
+    torch_version.TorchVersion = TorchVersion
+    monkeypatch.setattr(
+        orchestrator.torch,
+        "torch_version",
+        torch_version,
+        raising=False,
+    )
+    monkeypatch.delitem(sys.modules, "pyannote.audio.core.task", raising=False)
+    monkeypatch.delitem(sys.modules, "pyannote.audio.core", raising=False)
+
+    assert orchestrator._trusted_pyannote_checkpoint_globals() == [TorchVersion]
 
 
 def test_embedding_loader_uses_cache_resolved_model_reference(monkeypatch, tmp_path):
