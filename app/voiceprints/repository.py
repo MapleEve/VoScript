@@ -178,6 +178,11 @@ class VoiceprintRepository:
                 )
             return candidates
 
+    def count_identify_candidates(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM speaker_avg").fetchone()
+            return int(row[0] if row is not None else 0)
+
     def _require_speaker(self, speaker_id: str):
         row = self._conn.execute(
             "SELECT id FROM speakers WHERE id = ?",

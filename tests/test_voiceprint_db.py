@@ -48,6 +48,16 @@ def _unit_vec(seed: int, dim: int = 256) -> np.ndarray:
     return v
 
 
+def _vector_at_similarity(base: np.ndarray, seed: int, similarity: float) -> np.ndarray:
+    orth = _unit_vec(seed, dim=len(base))
+    orth -= float(orth @ base) * base
+    orth /= np.linalg.norm(orth) + 1e-9
+    v = similarity * base + np.sqrt(max(0.0, 1 - similarity**2)) * orth
+    v = v.astype(np.float32)
+    v /= np.linalg.norm(v) + 1e-9
+    return v
+
+
 class _FixedASNormScorer:
     def __init__(self, scores_by_enroll: dict[bytes, float], cohort_size: int = 10):
         self._scores_by_enroll = scores_by_enroll
@@ -249,6 +259,59 @@ def test_asnorm_rejects_ambiguous_top_two_margin(tmp_path):
     assert got_name is None
     assert sim == pytest.approx(0.81, abs=1e-9)
     assert first_id != second_id
+
+
+def test_asnorm_identify_uses_normalized_top_candidate(tmp_path):
+    """AS-norm must choose normalized top-1, not raw cosine top-1."""
+    db, _mod = _fresh_db(tmp_path / "vp")
+    query = _unit_vec(34)
+    raw_best = query
+    normalized_best = _vector_at_similarity(query, seed=35, similarity=0.90)
+
+    raw_best_id = db.add_speaker("raw_best", raw_best)
+    normalized_best_id = db.add_speaker("normalized_best", normalized_best)
+    db._asnorm = _FixedASNormScorer(
+        {
+            _asnorm_key(raw_best): 0.70,
+            _asnorm_key(normalized_best): 0.82,
+        },
+        cohort_size=10,
+    )
+
+    got_id, got_name, sim = db.identify(query)
+
+    assert got_id == normalized_best_id
+    assert got_id != raw_best_id
+    assert got_name == "normalized_best"
+    assert sim == pytest.approx(0.82, abs=1e-9)
+
+
+def test_asnorm_margin_uses_normalized_second_best(tmp_path):
+    """AS-norm margin must compare against normalized top-2, not raw top-2."""
+    db, _mod = _fresh_db(tmp_path / "vp")
+    query = _unit_vec(36)
+    best = query
+    raw_second = _vector_at_similarity(query, seed=37, similarity=0.90)
+    normalized_second = _vector_at_similarity(query, seed=38, similarity=0.80)
+
+    best_id = db.add_speaker("best", best)
+    raw_second_id = db.add_speaker("raw_second", raw_second)
+    normalized_second_id = db.add_speaker("normalized_second", normalized_second)
+    db._asnorm = _FixedASNormScorer(
+        {
+            _asnorm_key(best): 0.81,
+            _asnorm_key(raw_second): 0.70,
+            _asnorm_key(normalized_second): 0.79,
+        },
+        cohort_size=10,
+    )
+
+    got_id, got_name, sim = db.identify(query)
+
+    assert got_id is None
+    assert got_name is None
+    assert sim == pytest.approx(0.81, abs=1e-9)
+    assert len({best_id, raw_second_id, normalized_second_id}) == 3
 
 
 def test_update_speaker_static_sql(tmp_path):

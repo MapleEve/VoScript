@@ -7,11 +7,11 @@
 ### Bug Fixes
 
 - **AS-norm sample-count-aware calibration**: active AS-norm matching now applies a z-score-specific dynamic threshold based on each candidate's enrolled sample count and sample spread. Single-sample candidates are stricter than the `0.5` operating point, so weak scores such as `0.5713` no longer auto-name a speaker.
-- **AS-norm ambiguity guard**: top-1 matches must be separated from top-2 by a small AS-norm margin before automatic naming. Ambiguous candidates remain unnamed for review.
+- **AS-norm ambiguity guard**: active AS-norm matching now reranks candidates by normalized score before applying threshold and top-1/top-2 margin checks. Ambiguous candidates remain unnamed for review.
 
 ### Documentation
 
-- Added [`voiceprint-tuning.en.md`](./voiceprint-tuning.en.md), documenting voiceprint-related environment variables, API parameters, current hardcoded AS-norm/raw threshold defaults, cohort/top_n/margin behavior, and tuning guidance.
+- Added [`voiceprint-tuning.en.md`](./voiceprint-tuning.en.md) and [`voiceprint-tuning.zh.md`](./voiceprint-tuning.zh.md), documenting voiceprint-related environment variables, API parameters, current hardcoded AS-norm/raw threshold defaults, cohort/top_n/margin behavior, and tuning guidance.
 
 ## 0.7.3 — Runtime stability hotfixes (2026-04-25)
 

@@ -137,25 +137,38 @@ class VoiceprintDB:
         best_sim = score_result.similarity
 
         if score_result.asnorm_active:
-            effective = effective_asnorm_threshold(
-                base=self._asnorm_threshold,
-                sample_count=candidate.sample_count,
-                sample_spread=candidate.sample_spread,
+            candidate_count = self._repository.count_identify_candidates()
+            candidates = self._repository.fetch_identify_candidates(
+                query, limit=candidate_count
             )
-            second_sim = None
-            if len(candidates) > 1:
-                second = candidates[1]
-                second_score = resolve_score(
-                    raw_similarity=second.similarity,
+            scored_candidates = []
+            for candidate in candidates:
+                candidate_score = resolve_score(
+                    raw_similarity=candidate.similarity,
                     scorer=self._asnorm,
-                    enroll_emb=second.enroll_emb,
+                    enroll_emb=candidate.enroll_emb,
                     test_emb=query,
                 )
-                if second_score.asnorm_active:
-                    second_sim = second_score.similarity
+                if not candidate_score.asnorm_active:
+                    continue
+                effective = effective_asnorm_threshold(
+                    base=self._asnorm_threshold,
+                    sample_count=candidate.sample_count,
+                    sample_spread=candidate.sample_spread,
+                )
+                scored_candidates.append(
+                    (candidate, candidate_score.similarity, effective)
+                )
+
+            if not scored_candidates:
+                return None, None, 0.0
+
+            scored_candidates.sort(key=lambda item: item[1], reverse=True)
+            candidate, best_sim, effective = scored_candidates[0]
+            second_sim = scored_candidates[1][1] if len(scored_candidates) > 1 else None
             logger.debug(
                 "identify[asnorm]: best=%s normalized_sim=%.4f threshold=%.3f "
-                "second=%.4f margin_ok=%s (n=%d, spread=%s)",
+                "second=%.4f margin_ok=%s (n=%d, spread=%s, candidates=%d)",
                 candidate.speaker_id,
                 best_sim,
                 effective,
@@ -163,6 +176,7 @@ class VoiceprintDB:
                 asnorm_margin_passes(best_sim, second_sim),
                 candidate.sample_count,
                 candidate.sample_spread,
+                len(scored_candidates),
             )
             if not asnorm_margin_passes(best_sim, second_sim):
                 return None, None, best_sim

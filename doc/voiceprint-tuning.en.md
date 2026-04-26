@@ -49,6 +49,9 @@ they are not stable public API knobs until explicitly exposed.
 
 - Keep AS-norm and raw cosine thresholds separate. AS-norm scores are z-scores,
   so raw cosine constants should not be copied directly.
+- When AS-norm is active, candidates are scored and reranked by normalized
+  score first. Threshold and margin checks use normalized top-1/top-2, not raw
+  cosine top-1/top-2.
 - For production precision, avoid lowering the AS-norm single-sample threshold
   below `0.60` without an internal benchmark. A score around `0.5713` for a
   one-sample candidate is intentionally not enough to auto-name.
