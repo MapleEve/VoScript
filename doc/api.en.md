@@ -373,8 +373,12 @@ thread named `cohort-rebuild` wakes every 60 s and calls `maybe_rebuild_cohort()
 the latest enrollment is at least 30 s old. The rebuild is lock-protected, so the
 daemon and `POST /api/voiceprints/rebuild-cohort` cannot run the rebuild concurrently.
 **No manual action is needed** — new embeddings usually enter AS-norm scoring within
-about 30-90 s of enrollment. `POST /api/voiceprints/rebuild-cohort` remains available
-for an immediate forced rebuild.
+about 30-90 s of enrollment. Automatic rebuilds protect a larger loaded or persisted
+cohort: if the transcription source is empty, has only a few embeddings, or has fewer
+embeddings than the current cohort, the daemon keeps the existing `asnorm_cohort.npy`
+instead of shrinking it after transcription cleanup. `POST /api/voiceprints/rebuild-cohort`
+remains available for an immediate forced rebuild and uses the currently available
+embeddings as an explicit manual operation.
 
 #### `PUT /api/voiceprints/{id}/name`
 

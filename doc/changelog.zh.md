@@ -17,6 +17,9 @@
 - **AS-norm 歧义保护**：自动命名前要求 top-1 与 top-2 保持最小 AS-norm margin。
   AS-norm 激活时会按 normalized score 重新排序候选，再基于 normalized top-1/top-2
   做阈值和 margin 判定；候选过近时保留为未命名，交给人工复核。
+- **AS-norm cohort 保护**：启动时 direct-load 已持久化的 `asnorm_cohort.npy`
+  后会把自动重建状态标记为 clean；后台自动重建不会用更少的转录 embedding 覆盖更大的
+  已持久化 / 内存 cohort，避免清空转录结果后 AS-norm cohort 自动退化。
 - **降噪 env/API 优先级修复**：`POST /api/transcribe` 省略 `denoise_model` 时现在使用服务端 `DENOISE_MODEL`；只有显式传 `denoise_model=none` 才会针对本次请求关闭降噪。显式 `snr_threshold` 仍优先覆盖 `DENOISE_SNR_THRESHOLD`。
 
 ### 配置
@@ -35,6 +38,7 @@
 ### 测试
 
 - 新增本地契约测试覆盖 `status=completed`、原始 `segments[].speaker_label`、可选 `alignment` 元数据，以及降噪 env/API 优先级。
+- 新增 AS-norm cohort 回归测试，覆盖 direct-load 后自动 tick 不重建、清空 / 小样本转录源不缩小既有 cohort，以及显式 rebuild 仍按手动操作执行。
 
 ## 0.7.3 — 运行时稳定性热修复 (2026-04-25)
 

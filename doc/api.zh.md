@@ -347,7 +347,10 @@ curl -X POST http://localhost:8780/api/voiceprints/enroll \
 `maybe_rebuild_cohort()`。重建过程有锁保护，因此后台线程与
 `POST /api/voiceprints/rebuild-cohort` 不会并发执行同一次重建。**无需手动触发**，
 新 embedding 通常会在 enrollment 后约 30-90 秒内进入 AS-norm 评分。
-`POST /api/voiceprints/rebuild-cohort` 仍可用于立即强制重建。
+自动重建会保护已加载或已持久化的较大 cohort：如果当前转录源为空、只有少量
+embedding，或源数量少于当前 cohort，后台线程会保留现有 `asnorm_cohort.npy`，避免清理
+转录结果后让 AS-norm 退化。`POST /api/voiceprints/rebuild-cohort`
+仍可用于立即强制重建，并按显式手动操作使用当前可用 embedding 生成新 cohort。
 
 #### `PUT /api/voiceprints/{id}/name`
 

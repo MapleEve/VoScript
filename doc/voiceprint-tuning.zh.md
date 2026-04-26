@@ -47,6 +47,7 @@
 | AS-norm top-1 / top-2 margin | `0.05` | normalized score 最高的候选必须与 normalized 第二名保持最小间隔，否则保持未命名。 |
 | AS-norm cohort `top_n` | `200` | 用于 AS-norm 统计的最近 impostor 数量，上限为 cohort 实际大小。 |
 | cohort 自动重建循环 | 每 `60s` 唤醒，`30s` 防抖 | 新登记样本通常会在约 `30-90s` 内进入 AS-norm 评分。 |
+| cohort 自动保护 | 保留更大 cohort | 后台自动重建不会用空转录源或更少的 embedding 覆盖已加载 / 已持久化的较大 cohort；手动 rebuild 仍按显式操作重建。 |
 
 ## AS-norm 调参建议
 

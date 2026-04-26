@@ -47,6 +47,7 @@ they are not stable public API knobs until explicitly exposed.
 | AS-norm top-1/top-2 margin | `0.05` | If the best AS-norm candidate is too close to the second candidate, the result stays unknown. |
 | AS-norm cohort `top_n` | `200` | Number of nearest cohort impostors used for AS-norm statistics, capped by cohort size. |
 | Cohort auto-rebuild loop | wake every `60s`, debounce `30s` | New enrollments normally enter AS-norm scoring within about `30-90s`. |
+| Cohort auto-preservation | keep the larger cohort | Background rebuilds do not replace a larger loaded/persisted cohort with an empty transcription source or fewer embeddings; manual rebuild remains an explicit rebuild. |
 
 ## AS-norm Tuning Guidance
 
