@@ -142,6 +142,87 @@ def test_auto_rebuild_persists_cohort_for_restart_load(tmp_path):
     assert restarted_db.cohort_size == 1
 
 
+def test_direct_load_marks_cohort_clean_and_auto_tick_does_not_shrink(tmp_path):
+    """Loading a saved AS-norm cohort must not make the auto worker rebuild it."""
+    transcriptions_dir = tmp_path / "transcriptions"
+    cohort_path = transcriptions_dir / "asnorm_cohort.npy"
+    saved = np.stack([_unit_vec(1000 + i) for i in range(65)]).astype(np.float32)
+    cohort_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cohort_path, saved)
+    _write_transcription_embedding(transcriptions_dir, "tr_single", _unit_vec(2000))
+
+    db, _mod = _fresh_db(tmp_path / "voiceprints")
+    db.load_cohort(str(cohort_path))
+    db._cohort_last_enroll = 0.0
+
+    rebuilt = db.maybe_rebuild_cohort(str(transcriptions_dir), debounce_s=0.0)
+
+    assert rebuilt is False, "A direct-loaded clean cohort should not auto-rebuild"
+    assert db.cohort_size == 65
+    assert np.load(cohort_path, allow_pickle=False).shape == (65, 256)
+
+
+def test_auto_rebuild_keeps_larger_cohort_when_sources_are_too_small(tmp_path):
+    """Dirty auto rebuild must not shrink a larger persisted AS-norm cohort."""
+    transcriptions_dir = tmp_path / "transcriptions"
+    cohort_path = transcriptions_dir / "asnorm_cohort.npy"
+    saved = np.stack([_unit_vec(3000 + i) for i in range(65)]).astype(np.float32)
+    cohort_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cohort_path, saved)
+    _write_transcription_embedding(transcriptions_dir, "tr_single", _unit_vec(4000))
+
+    db, _mod = _fresh_db(tmp_path / "voiceprints")
+    db.load_cohort(str(cohort_path))
+    db._cohort_generation += 1
+    db._cohort_last_enroll = 0.0
+
+    rebuilt = db.maybe_rebuild_cohort(str(transcriptions_dir), debounce_s=0.0)
+
+    assert rebuilt is False, "Auto rebuild should skip smaller source cohorts"
+    assert db.cohort_size == 65
+    assert np.load(cohort_path, allow_pickle=False).shape == (65, 256)
+
+
+def test_auto_rebuild_keeps_larger_cohort_when_sources_are_empty(tmp_path):
+    """Dirty auto rebuild must treat transcription cleanup as a no-shrink no-op."""
+    transcriptions_dir = tmp_path / "transcriptions"
+    cohort_path = transcriptions_dir / "asnorm_cohort.npy"
+    saved = np.stack([_unit_vec(4500 + i) for i in range(65)]).astype(np.float32)
+    cohort_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cohort_path, saved)
+
+    db, _mod = _fresh_db(tmp_path / "voiceprints")
+    db.load_cohort(str(cohort_path))
+    db._cohort_generation += 1
+    db._cohort_last_enroll = 0.0
+
+    rebuilt = db.maybe_rebuild_cohort(str(transcriptions_dir), debounce_s=0.0)
+
+    assert rebuilt is False, "Auto rebuild should skip an empty source cohort"
+    assert db.cohort_size == 65
+    assert db._cohort_built_gen == db._cohort_generation
+    assert np.load(cohort_path, allow_pickle=False).shape == (65, 256)
+
+
+def test_manual_rebuild_can_replace_existing_cohort_with_available_sources(tmp_path):
+    """The explicit rebuild API path keeps its existing force-like semantics."""
+    transcriptions_dir = tmp_path / "transcriptions"
+    cohort_path = transcriptions_dir / "asnorm_cohort.npy"
+    saved = np.stack([_unit_vec(5000 + i) for i in range(65)]).astype(np.float32)
+    cohort_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cohort_path, saved)
+    _write_transcription_embedding(transcriptions_dir, "tr_single", _unit_vec(6000))
+
+    db, _mod = _fresh_db(tmp_path / "voiceprints")
+    db.load_cohort(str(cohort_path))
+
+    rebuilt_size = db.build_cohort_from_transcriptions(str(transcriptions_dir))
+
+    assert rebuilt_size == 1
+    assert db.cohort_size == 1
+    assert np.load(cohort_path, allow_pickle=False).shape == (1, 256)
+
+
 def test_lifespan_loads_saved_cohort_without_rebuild(tmp_path, monkeypatch):
     """Startup must load an existing cohort file instead of rebuilding it again."""
     transcriptions_dir = tmp_path / "transcriptions"

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .scoring import ASNormScorer
+from .scoring import ASNORM_MIN_COHORT_SIZE, ASNormScorer
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +52,21 @@ class VoiceprintCohortManager:
         arr = np.load(cohort_path, allow_pickle=False).astype(np.float32)
         if arr.ndim != 2:
             raise ValueError(f"Cohort must be 2D, got {arr.ndim}")
-        self._db._asnorm = ASNormScorer(arr, top_n=top_n)
+        scorer = ASNormScorer(arr, top_n=top_n)
+        with self._db._lock:
+            self._db._asnorm = scorer
+            self._mark_generation_clean(self._db._cohort_generation)
         logger.info("AS-norm cohort loaded: %d speakers, top_n=%d", len(arr), top_n)
 
     def build_from_transcriptions(
-        self, transcriptions_dir: str, save_path: str | None = None
+        self,
+        transcriptions_dir: str,
+        save_path: str | None = None,
+        *,
+        protect_existing: bool = False,
     ) -> int:
         target_gen = self._db._cohort_generation
+        self._db.last_cohort_rebuild_updated = False
         if not self._db._cohort_rebuild_lock.acquire(blocking=False):
             logger.info("build_cohort: rebuild already in progress, skipping")
             return self.cohort_size
@@ -95,6 +103,18 @@ class VoiceprintCohortManager:
             self._db.last_cohort_skipped = skipped_files
 
             if not embs:
+                if protect_existing:
+                    current_size = self._current_or_persisted_cohort_size(save_target)
+                    if current_size > 0:
+                        self._mark_generation_clean(target_gen)
+                        logger.info(
+                            "build_cohort_from_transcriptions: keeping existing "
+                            "AS-norm cohort (%d embeddings); no source embeddings "
+                            "found in %s",
+                            current_size,
+                            transcriptions_dir,
+                        )
+                        return current_size
                 logger.warning(
                     "build_cohort_from_transcriptions: no embeddings found in %s",
                     transcriptions_dir,
@@ -102,6 +122,21 @@ class VoiceprintCohortManager:
                 return 0
 
             cohort = np.stack(embs, axis=0)
+            if protect_existing:
+                current_size = self._current_or_persisted_cohort_size(save_target)
+                if self._should_keep_existing_cohort(
+                    source_size=len(cohort),
+                    current_size=current_size,
+                ):
+                    self._mark_generation_clean(target_gen)
+                    logger.info(
+                        "build_cohort_from_transcriptions: keeping existing AS-norm "
+                        "cohort (%d embeddings); source has %d embeddings",
+                        current_size,
+                        len(cohort),
+                    )
+                    return current_size
+
             if save_target is not None:
                 save_target.parent.mkdir(parents=True, exist_ok=True)
                 np.save(save_target, cohort)
@@ -112,8 +147,8 @@ class VoiceprintCohortManager:
             new_scorer = ASNormScorer(cohort, top_n=min(200, len(cohort)))
             with self._db._lock:
                 self._db._asnorm = new_scorer
-                if self._db._cohort_generation == target_gen:
-                    self._db._cohort_built_gen = target_gen
+                self._mark_generation_clean(target_gen)
+                self._db.last_cohort_rebuild_updated = True
 
             logger.info(
                 "AS-norm cohort built from transcriptions: %d embeddings",
@@ -130,7 +165,16 @@ class VoiceprintCohortManager:
             return False
 
         try:
-            size = self.build_from_transcriptions(transcriptions_dir)
+            size = self.build_from_transcriptions(
+                transcriptions_dir,
+                protect_existing=True,
+            )
+            if not self._db.last_cohort_rebuild_updated:
+                logger.info(
+                    "auto-rebuild: keeping existing AS-norm cohort (%d embeddings)",
+                    size,
+                )
+                return False
             save_target = self.resolve_path(transcriptions_dir=transcriptions_dir)
             if save_target is not None:
                 logger.info(
@@ -146,6 +190,41 @@ class VoiceprintCohortManager:
         except Exception as exc:
             logger.warning("auto-rebuild: cohort rebuild failed: %s", exc)
             return False
+
+    def _mark_generation_clean(self, target_gen: int) -> None:
+        if self._db._cohort_generation == target_gen:
+            self._db._cohort_built_gen = target_gen
+
+    def _current_or_persisted_cohort_size(self, save_target: Path | None) -> int:
+        return max(self.cohort_size, self._persisted_cohort_size(save_target))
+
+    @staticmethod
+    def _should_keep_existing_cohort(*, source_size: int, current_size: int) -> bool:
+        if current_size <= 0:
+            return False
+        if source_size < current_size:
+            return True
+        return current_size >= ASNORM_MIN_COHORT_SIZE > source_size
+
+    @staticmethod
+    def _persisted_cohort_size(save_target: Path | None) -> int:
+        if save_target is None or not save_target.exists():
+            return 0
+        try:
+            arr = np.load(save_target, allow_pickle=False, mmap_mode="r")
+        except Exception as exc:
+            logger.warning(
+                "build_cohort: cannot inspect existing cohort %s: %s", save_target, exc
+            )
+            return 0
+        if arr.ndim != 2:
+            logger.warning(
+                "build_cohort: existing cohort %s has invalid ndim=%d",
+                save_target,
+                arr.ndim,
+            )
+            return 0
+        return int(arr.shape[0])
 
     @staticmethod
     def _collect_json_embeddings(

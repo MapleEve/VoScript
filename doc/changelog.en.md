@@ -13,6 +13,10 @@ No unreleased changes yet.
 - **Speaker identity preservation follow-up (#8)**: result artifacts preserve the raw diarization `speaker_label` even when multiple clusters match the same enrolled voiceprint. Display names are still disambiguated for readability, but downstream clients can safely use `speaker_label` as the stable cluster key.
 - **AS-norm sample-count-aware calibration**: active AS-norm matching now applies a z-score-specific dynamic threshold based on each candidate's enrolled sample count and sample spread. Single-sample candidates are stricter than the `0.5` operating point, so weak scores such as `0.5713` no longer auto-name a speaker.
 - **AS-norm ambiguity guard**: active AS-norm matching now reranks candidates by normalized score before applying threshold and top-1/top-2 margin checks. Ambiguous candidates remain unnamed for review.
+- **AS-norm cohort preservation**: direct-loading an existing `asnorm_cohort.npy`
+  now marks the auto-rebuild state clean, and background rebuilds no longer replace
+  a larger persisted/in-memory cohort with fewer transcription embeddings. Clearing
+  transcription results therefore cannot indirectly shrink the AS-norm cohort.
 - **Denoise env/API precedence**: omitting `denoise_model` from `POST /api/transcribe` now uses the server-side `DENOISE_MODEL`; explicitly sending `denoise_model=none` disables denoising for that request. Explicit `snr_threshold` continues to override `DENOISE_SNR_THRESHOLD`.
 
 ### Configuration
@@ -29,6 +33,7 @@ No unreleased changes yet.
 ### Tests
 
 - Added local contract coverage for `status=completed`, raw `segments[].speaker_label`, optional `alignment` metadata, and denoise env/API precedence.
+- Added AS-norm cohort regressions covering clean direct-load auto ticks, empty/small transcription sources preserving a larger cohort, and explicit rebuild retaining its manual semantics.
 
 ## 0.7.3 — Runtime stability hotfixes (2026-04-25)
 

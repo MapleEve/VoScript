@@ -19,7 +19,8 @@ _SPREAD_RELAXATION_CAP = 0.10
 # Absolute floor — never accept a match below this, regardless of per-speaker
 # relaxation. Guards against false positives from degenerate clusters.
 _ABSOLUTE_FLOOR = 0.60
-_MIN_ASNORM_COHORT_SIZE = 10
+ASNORM_MIN_COHORT_SIZE = 10
+_MIN_ASNORM_COHORT_SIZE = ASNORM_MIN_COHORT_SIZE
 
 # AS-norm scores are z-score-like, not raw cosine similarities. Keep the
 # operating point near the calibrated base for stable multi-sample speakers, but

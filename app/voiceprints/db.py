@@ -43,6 +43,7 @@ class VoiceprintDB:
         self._cohort_last_enroll: float = 0.0
         self._cohort_rebuild_lock = threading.RLock()
         self.last_cohort_skipped: int = 0
+        self.last_cohort_rebuild_updated: bool = False
 
         self._storage = VoiceprintStorage(self.db_dir, self._lock)
         self._storage.bootstrap()
