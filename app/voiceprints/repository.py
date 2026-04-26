@@ -190,7 +190,9 @@ class VoiceprintRepository:
         matches = self._find_best_matches(query, limit=1)
         return matches[0] if matches else (None, 0.0)
 
-    def _find_best_matches(self, query: np.ndarray, limit: int = 2) -> list[tuple[str, float]]:
+    def _find_best_matches(
+        self, query: np.ndarray, limit: int = 2
+    ) -> list[tuple[str, float]]:
         limit = max(1, int(limit))
         if self._storage.vec_loaded and self._storage.vec_table_dim is not None:
             try:
