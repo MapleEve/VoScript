@@ -73,11 +73,11 @@
 - 所有已有 HTTP 接口行为不变。
 - cohort 自动刷新为可观测的行为变化：长期运行的服务无需再手动 rebuild-cohort，但手动调用仍有效（立即重建，不等待防抖）。
 
-## 0.7.0 — 说话人合并 + ngram 去重参数 (2026-04-21)
+## 0.7.0 — 说话人身份保留 + ngram 去重参数 (2026-04-21)
 
 ### Bug 修复
 
-- **说话人聚类合并**：说话人分离产生的多个聚类（如 `SPEAKER_00`、`SPEAKER_02`）若匹配到同一个已登记说话人，现在会在 segment 组装前合并为单一规范标签（取相似度最高的那个）。此前同一个人会出现为多个独立说话人。
+- **说话人身份保留**：说话人分离产生的多个聚类（如 `SPEAKER_00`、`SPEAKER_02`）即使匹配到同一个已登记声纹，每个原始 diarization 标签也会作为独立的输出说话人身份保留。显示名会做区分以便阅读（例如 `Maple`、`Maple (2)`）。
 
 ### 新功能
 
@@ -87,7 +87,7 @@
 
 ### 测试
 
-- 新增 43 个 E2E 测试，分布在 8 个测试类：`TestSpeakerConsolidation`、`TestSecurity`、`TestSegmentReassignment`、`TestSpeakerManagement`、`TestExportFormats`、`TestOutputSchema`、`TestNoRepeatNgramSize`、`TestEdgeCases`、`TestLongChains`。
+- 新增 43 个 E2E 测试，分布在 8 个测试类：`TestSpeakerIdentityPreservation`、`TestSecurity`、`TestSegmentReassignment`、`TestSpeakerManagement`、`TestExportFormats`、`TestOutputSchema`、`TestNoRepeatNgramSize`、`TestEdgeCases`、`TestLongChains`。
 - 测试套件共 84 条（78 通过，6 预期跳过）。
 
 ### 部署

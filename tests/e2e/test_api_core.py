@@ -763,18 +763,12 @@ class TestArtifactCleanup:
 
 
 # ---------------------------------------------------------------------------
-# Speaker consolidation tests
+# Speaker identity preservation tests
 # ---------------------------------------------------------------------------
 
 
-class TestSpeakerConsolidation:
-    """Verify that multiple diarization clusters matching the same enrolled
-    speaker are consolidated into a single canonical speaker entry.
-
-    The fix: after voiceprint identification, any clusters sharing the same
-    enrolled speaker_id are remapped to the highest-similarity cluster's label,
-    and unique_speakers is built from resolved names (not raw diarizer labels).
-    """
+class TestSpeakerIdentityPreservation:
+    """Verify that voiceprint naming never rewrites diarization cluster labels."""
 
     def test_unique_speakers_has_no_duplicates(self, server_url, submitted_job):
         """unique_speakers must never contain the same name twice."""
@@ -783,28 +777,17 @@ class TestSpeakerConsolidation:
             set(unique_speakers)
         ), f"unique_speakers contains duplicates: {unique_speakers}"
 
-    def test_same_speaker_id_implies_same_speaker_label(
+    def test_speaker_label_remains_raw_diarization_label(
         self, server_url, submitted_job
     ):
-        """All segments sharing an enrolled speaker_id must use one speaker_label.
-
-        Before the fix, multiple diarization clusters (SPEAKER_00, SPEAKER_02…)
-        could all resolve to the same enrolled speaker_id but appear under
-        different speaker_label values — now they must be consolidated.
-        """
+        """Segments must keep their raw SPEAKER_XX label after voiceprint matching."""
         segments = submitted_job["result"].get("segments", [])
         if not segments:
             pytest.skip("No segments in submitted_job result")
-        id_to_labels: dict = {}
         for seg in segments:
-            spk_id = seg.get("speaker_id")
-            if spk_id is None:
-                continue
-            id_to_labels.setdefault(spk_id, set()).add(seg.get("speaker_label"))
-        for spk_id, labels in id_to_labels.items():
-            assert len(labels) == 1, (
-                f"speaker_id {spk_id!r} maps to multiple speaker_labels {labels}. "
-                "Clusters for the same enrolled speaker were not consolidated."
+            label = seg.get("speaker_label")
+            assert isinstance(label, str) and label.startswith("SPEAKER_"), (
+                f"segment lost raw diarization speaker_label: {seg}"
             )
 
     def test_unique_speakers_reflects_resolved_names(self, server_url, submitted_job):
@@ -826,11 +809,10 @@ class TestSpeakerConsolidation:
                 "unique_speakers should use resolved names, not raw diarizer labels."
             )
 
-    def test_any_existing_transcription_passes_consolidation_invariants(
+    def test_any_existing_transcription_passes_identity_invariants(
         self, server_url
     ):
-        """Check consolidation invariants on every completed transcription the
-        server currently holds — catches pre-fix results as well as new ones."""
+        """Check speaker identity invariants on recent completed transcriptions."""
         resp = _get("/api/transcriptions")
         if resp.status_code != 200:
             pytest.skip("Cannot list transcriptions")
@@ -843,17 +825,11 @@ class TestSpeakerConsolidation:
                 continue
             result = tr_resp.json()
             segments = result.get("segments", [])
-            # Invariant: same enrolled speaker_id → same speaker_label
-            id_to_labels: dict = {}
             for seg in segments:
-                spk_id = seg.get("speaker_id")
-                if spk_id is None:
-                    continue
-                id_to_labels.setdefault(spk_id, set()).add(seg.get("speaker_label"))
-            for spk_id, labels in id_to_labels.items():
-                if len(labels) > 1:
+                label = seg.get("speaker_label")
+                if not (isinstance(label, str) and label.startswith("SPEAKER_")):
                     violations.append(
-                        f"{tr_id}: speaker_id {spk_id!r} → labels {labels}"
+                        f"{tr_id}: segment lost raw speaker_label {label!r}"
                     )
             # Invariant: unique_speakers has no duplicates
             unique = result.get("unique_speakers", [])
@@ -862,7 +838,7 @@ class TestSpeakerConsolidation:
                     f"{tr_id}: duplicate entries in unique_speakers {unique}"
                 )
         assert not violations, (
-            f"Speaker consolidation invariants violated in {len(violations)} case(s):\n"
+            f"Speaker identity invariants violated in {len(violations)} case(s):\n"
             + "\n".join(violations)
         )
 

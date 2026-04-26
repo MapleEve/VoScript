@@ -14,47 +14,51 @@ class InMemoryArtifactsProvider:
     """Assemble the final transcript payload from the current context state."""
 
     @staticmethod
-    def _build_cluster_remap(
-        speaker_map: dict[str, dict[str, object]],
+    def _build_display_names(
+        speaker_labels: list[str],
+        speaker_map: dict[str, dict],
     ) -> dict[str, str]:
-        id_to_clusters: dict[str, list[tuple[str, float]]] = {}
-        for speaker_label, info in speaker_map.items():
-            matched_id = info.get("matched_id")
-            similarity = float(info.get("similarity", 0) or 0)
-            if matched_id is not None:
-                id_to_clusters.setdefault(str(matched_id), []).append(
-                    (speaker_label, similarity)
-                )
+        labels_by_name: dict[str, list[str]] = {}
 
-        cluster_remap: dict[str, str] = {}
-        for cluster_list in id_to_clusters.values():
-            cluster_list.sort(key=lambda item: item[1], reverse=True)
-            canonical_label = cluster_list[0][0]
-            for speaker_label, _similarity in cluster_list[1:]:
-                cluster_remap[speaker_label] = canonical_label
-        return cluster_remap
+        for speaker_label in speaker_labels:
+            match = speaker_map.get(speaker_label, {})
+            speaker_name = str(match.get("matched_name") or speaker_label)
+            labels_by_name.setdefault(speaker_name, []).append(speaker_label)
+
+        display_names: dict[str, str] = {}
+        for speaker_name, labels in labels_by_name.items():
+            for index, speaker_label in enumerate(labels, start=1):
+                display_names[speaker_label] = (
+                    speaker_name if index == 1 else f"{speaker_name} ({index})"
+                )
+        return display_names
 
     @staticmethod
     def _build_segments(
         aligned_segments: list[dict],
         speaker_map: dict[str, dict],
     ) -> tuple[list[dict], list[str]]:
-        cluster_remap = InMemoryArtifactsProvider._build_cluster_remap(speaker_map)
+        speaker_labels = list(
+            dict.fromkeys(segment["speaker"] for segment in aligned_segments)
+        )
+        display_names = InMemoryArtifactsProvider._build_display_names(
+            speaker_labels,
+            speaker_map,
+        )
         segments: list[dict] = []
         seen_speakers: set[str] = set()
         unique_speakers: list[str] = []
 
         for index, segment in enumerate(aligned_segments):
             speaker_label = segment["speaker"]
-            canonical_label = cluster_remap.get(speaker_label, speaker_label)
-            match = speaker_map.get(canonical_label, speaker_map.get(speaker_label, {}))
-            speaker_name = match.get("matched_name", canonical_label)
+            match = speaker_map.get(speaker_label, {})
+            speaker_name = display_names.get(speaker_label, speaker_label)
             output = {
                 "id": index,
                 "start": segment["start"],
                 "end": segment["end"],
                 "text": segment["text"],
-                "speaker_label": canonical_label,
+                "speaker_label": speaker_label,
                 "speaker_id": match.get("matched_id"),
                 "speaker_name": speaker_name,
                 "similarity": match.get("similarity", 0),
