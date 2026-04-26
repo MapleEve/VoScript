@@ -27,6 +27,7 @@ from pipeline.stages import (
     available_stage_slots as available_stage_slots_compat,
     resolve_stage as resolve_stage_compat,
 )
+from providers.artifacts.default import InMemoryArtifactsProvider
 
 
 def test_stage_slots_publish_stable_order_and_callable_entrypoints():
@@ -470,6 +471,50 @@ def test_runner_persists_artifacts_and_cleans_generated_audio(tmp_path):
     assert emb_path.exists()
     assert not audio_path.with_suffix(".wav").exists()
     assert not audio_path.with_suffix(".denoised.wav").exists()
+
+
+def test_artifacts_preserve_raw_speaker_labels_when_clusters_match_same_voiceprint():
+    aligned_segments = [
+        {
+            "start": 0.0,
+            "end": 1.0,
+            "text": "first",
+            "speaker": "SPEAKER_00",
+        },
+        {
+            "start": 1.0,
+            "end": 2.0,
+            "text": "second",
+            "speaker": "SPEAKER_01",
+        },
+    ]
+    speaker_map = {
+        "SPEAKER_00": {
+            "matched_id": "spk_same",
+            "matched_name": "Matched Speaker",
+            "similarity": 2.6928,
+            "embedding_key": "SPEAKER_00",
+        },
+        "SPEAKER_01": {
+            "matched_id": "spk_same",
+            "matched_name": "Matched Speaker",
+            "similarity": 0.5713,
+            "embedding_key": "SPEAKER_01",
+        },
+    }
+
+    segments, unique_speakers = InMemoryArtifactsProvider._build_segments(
+        aligned_segments,
+        speaker_map,
+    )
+
+    assert [segment["speaker_label"] for segment in segments] == [
+        "SPEAKER_00",
+        "SPEAKER_01",
+    ]
+    assert segments[0]["speaker_name"] == "Matched Speaker"
+    assert segments[1]["speaker_name"] == "Matched Speaker (2)"
+    assert unique_speakers == ["Matched Speaker", "Matched Speaker (2)"]
 
 
 def test_runner_uses_explicit_artifacts_provider_selection():

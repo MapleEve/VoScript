@@ -199,6 +199,11 @@ If the best candidate clears the effective threshold, the service returns the
 matched `speaker_id` / `speaker_name`; otherwise `speaker_id` is `null` and
 `speaker_name` falls back to the raw label (for example `SPEAKER_00`).
 
+If two diarization labels in the same result resolve to the same display name,
+the service keeps both raw `speaker_label` values and disambiguates display
+names in segment output, for example `Alice` and `Alice (2)`. Voiceprint naming
+does not collapse diarization clusters.
+
 `similarity`: speaker-match score.
 
 - **Raw cosine mode** (`cohort < 10`, including fresh installs): range is `[-1, 1]`

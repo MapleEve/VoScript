@@ -73,11 +73,11 @@
 - All existing HTTP endpoints are unchanged.
 - Cohort auto-refresh is a visible behavior change: long-running services no longer need manual `rebuild-cohort` calls, though manual calls remain supported and bypass the debounce.
 
-## 0.7.0 — Speaker consolidation + ngram dedup parameter (2026-04-21)
+## 0.7.0 — Speaker identity preservation + ngram dedup parameter (2026-04-21)
 
 ### Bug fix
 
-- **Speaker cluster consolidation**: when diarization produces multiple clusters (e.g. `SPEAKER_00`, `SPEAKER_02`) that match the same enrolled speaker, they are now merged into a single canonical label (highest similarity wins) before segment assembly. Previously the same person could appear as separate speakers.
+- **Speaker identity preservation**: when diarization produces multiple clusters (e.g. `SPEAKER_00`, `SPEAKER_02`) that match the same enrolled speaker, each original diarization label remains a distinct output speaker identity. Display names are disambiguated for readability (for example `Maple`, `Maple (2)`).
 
 ### Features
 
@@ -87,7 +87,7 @@
 
 ### Tests
 
-- Added 43 E2E tests across 8 test classes: `TestSpeakerConsolidation`, `TestSecurity`, `TestSegmentReassignment`, `TestSpeakerManagement`, `TestExportFormats`, `TestOutputSchema`, `TestNoRepeatNgramSize`, `TestEdgeCases`, `TestLongChains`.
+- Added 43 E2E tests across 8 test classes: `TestSpeakerIdentityPreservation`, `TestSecurity`, `TestSegmentReassignment`, `TestSpeakerManagement`, `TestExportFormats`, `TestOutputSchema`, `TestNoRepeatNgramSize`, `TestEdgeCases`, `TestLongChains`.
 - Test suite: 84 collected (78 pass, 6 expected skips).
 
 ### Deployment

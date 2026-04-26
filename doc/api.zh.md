@@ -190,6 +190,10 @@ curl -X POST http://localhost:8780/api/transcribe \
 只要通过了上述自适应阈值就匹配上已登记声纹；否则 `speaker_id = null`，
 `speaker_name = speaker_label`（如 `SPEAKER_00`）。
 
+如果同一个结果里的多个 diarization 标签解析出相同展示名，服务会保留各自原始
+`speaker_label`，并在 segment 输出里给展示名加序号区分，例如 `张三` 和
+`张三 (2)`。声纹命名不会折叠 diarization cluster。
+
 `similarity`：说话人匹配相似度分数。
 - **raw cosine 模式**（cohort < 10 或全新安装）：值域 [-1, 1]，通常为 [0, 1]，表示与已登记声纹均值的余弦相似度。
 - **AS-norm 模式**（cohort ≥ 10）：归一化 z-score，**无界**（可大于 1.0 或为负数），代表相对于 impostor 分布的标准差倍数。
