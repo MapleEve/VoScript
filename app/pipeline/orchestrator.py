@@ -169,7 +169,11 @@ class TranscriptionPipeline:
             # faster_whisper 按需 lazy import，避免在不使用 whisper 的进程里加载 GPU 库
             from faster_whisper import WhisperModel
 
-            compute_type = "float16" if self.device.startswith("cuda") else "int8"
+            compute_type = (
+                "float16"
+                if self.device == "cuda" or self.device.startswith("cuda:")
+                else "int8"
+            )
             local_dir = Path("/models") / f"faster-whisper-{self.model_size}"
             model_ref = str(local_dir) if local_dir.exists() else self.model_size
             logger.info(
