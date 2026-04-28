@@ -17,6 +17,7 @@ from config import (
     APP_VERSION,
     CORS_ORIGINS,
     HF_TOKEN,
+    MODEL_IDLE_TIMEOUT_SEC,
     PUBLIC_EXACT_PATHS,
     PUBLIC_PATH_PREFIXES,
     TRANSCRIPTIONS_DIR,
@@ -25,6 +26,7 @@ from config import (
     WHISPER_MODEL,
     DEVICE,
 )
+from infra.idle_unload import IdleUnloadDaemon
 from infra.job_persistence import recover_orphan_jobs
 from pipeline import TranscriptionPipeline
 from voiceprints.db import VoiceprintDB
@@ -89,6 +91,20 @@ async def lifespan(app: FastAPI):
     # Initialise transcription pipeline
     app.state.pipeline = TranscriptionPipeline(WHISPER_MODEL, DEVICE, HF_TOKEN)
 
+    # Idle-unload daemon: free GPU VRAM after MODEL_IDLE_TIMEOUT_SEC seconds
+    # of inactivity.  Disabled when the timeout is 0 (the default).
+    _idle_daemon: IdleUnloadDaemon | None = None
+    if MODEL_IDLE_TIMEOUT_SEC > 0:
+        _idle_daemon = IdleUnloadDaemon(
+            app.state.pipeline,
+            idle_timeout_sec=MODEL_IDLE_TIMEOUT_SEC,
+        )
+        _idle_daemon.start()
+    else:
+        logger.info(
+            "Idle model unloading disabled (set MODEL_IDLE_TIMEOUT_SEC > 0 to enable)."
+        )
+
     # Auth mode warning
     if API_KEY is None and not ALLOW_NO_AUTH:
         logger.warning(
@@ -107,6 +123,8 @@ async def lifespan(app: FastAPI):
 
     _stop_event.set()
     _rebuild_thread.join(timeout=5)
+    if _idle_daemon is not None:
+        _idle_daemon.stop(timeout=5)
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+### New Features
+
+- **Idle VRAM unload**: Added `MODEL_IDLE_TIMEOUT_SEC` config variable.  When
+  set to a positive integer, a background daemon automatically unloads all GPU
+  models (Whisper, diarization, embedding) after the pipeline has been idle for
+  that many seconds, freeing the occupied VRAM.  Models are transparently
+  reloaded on the next transcription request via the existing lazy-load
+  properties — no API change required.
+  When `DEVICE=cuda` (no explicit device index), the reload always targets the
+  CUDA GPU with the **most free memory** at that moment, making the feature
+  useful on multi-GPU hosts where available VRAM shifts between jobs.
+  Set to `0` (the default) to disable the mechanism; behaviour is identical to
+  previous releases.
+
 ### Documentation
 
 - Added [`configuration.en.md`](./configuration.en.md) /

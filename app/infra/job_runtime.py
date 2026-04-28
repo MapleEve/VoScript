@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from typing import TypeVar
@@ -64,6 +65,10 @@ _gpu_sem = threading.Semaphore(1)
 _in_flight_hashes: dict[str, str] = {}
 _in_flight_lock = threading.Lock()
 
+# Monotonic timestamp of the last successful GPU work completion.
+# 0.0 means no GPU work has run yet in this process lifetime.
+_last_gpu_work_at: float = 0.0
+
 
 def flush_torch_cuda_cache(
     logger: logging.Logger | None = None,
@@ -92,11 +97,25 @@ def run_serialized_gpu_work(
 ) -> _T:
     """Execute GPU work under the shared semaphore with current cache policy."""
 
+    global _last_gpu_work_at
     with _gpu_sem:
         flush_torch_cuda_cache(logger, phase="pre-whisper")
         result = work()
     flush_torch_cuda_cache(logger, phase="post-pipeline")
+    _last_gpu_work_at = time.monotonic()
     return result
+
+
+def last_gpu_work_elapsed() -> float:
+    """Seconds since the last successful GPU work completed.
+
+    Returns ``float('inf')`` when no GPU work has run yet in this process so
+    that the idle-unload daemon can correctly determine that there is nothing
+    useful loaded (models are lazily initialised and won't be in memory yet).
+    """
+    if _last_gpu_work_at == 0.0:
+        return float("inf")
+    return time.monotonic() - _last_gpu_work_at
 
 
 def register_in_flight(file_hash: str, job_id: str) -> str | None:
@@ -127,6 +146,7 @@ __all__ = [
     "_LRUJobsDict",
     "flush_torch_cuda_cache",
     "jobs",
+    "last_gpu_work_elapsed",
     "register_in_flight",
     "run_serialized_gpu_work",
     "unregister_in_flight",

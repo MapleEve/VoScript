@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+### 新功能
+
+- **空闲显存释放机制**：新增 `MODEL_IDLE_TIMEOUT_SEC` 配置项。设置为正整数时，
+  后台守护线程会在 GPU 空闲超过指定秒数后自动卸载所有模型（Whisper、diarization、
+  embedding），释放占用的 GPU 显存。下一个转录请求到来时，模型会通过惰性加载
+  透明地重新装载，用户无感知。
+  当 `DEVICE=cuda`（未指定 GPU 索引）时，重新加载前会自动扫描所有可见的 CUDA
+  设备，选择**剩余显存最多**的那块 GPU，适合多卡环境下显存动态变化的场景。
+  设置为 `0`（默认值）则关闭此机制，行为与之前版本完全一致。
+
 ### 文档
 
 - 新增 [`configuration.zh.md`](./configuration.zh.md) /

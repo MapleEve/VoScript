@@ -138,6 +138,17 @@ MAX_EMBED_DURATION: float = _env_float("MAX_EMBED_DURATION", 10.0)
 FFMPEG_TIMEOUT_SEC: int = _env_int("FFMPEG_TIMEOUT_SEC", 1800)
 JOBS_MAX_CACHE: int = _env_int("JOBS_MAX_CACHE", 200)
 
+# ---------------------------------------------------------------------------
+# Idle model unload
+# ---------------------------------------------------------------------------
+
+# Seconds of GPU inactivity after which models are automatically unloaded to
+# free VRAM.  Set to 0 (the default) to disable idle unloading entirely.
+# When a new transcription arrives the models are reloaded transparently.
+# On reload the service picks the CUDA device with the most free memory (when
+# DEVICE="cuda"); a specific device such as "cuda:0" is always respected.
+MODEL_IDLE_TIMEOUT_SEC: int = _env_int("MODEL_IDLE_TIMEOUT_SEC", 0)
+
 # Paths that must stay open even when API_KEY auth is enabled. "/" is the
 # bundled web UI (browsers can't attach a Bearer header to a direct
 # navigation — the UI's own fetch() calls to /api/* still carry the key).

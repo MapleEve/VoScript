@@ -21,6 +21,7 @@ from infra.huggingface_models import (
     configure_huggingface_runtime,
     hf_model_reference,
 )
+from infra.idle_unload import select_best_cuda_device
 from providers.asr import transcribe_audio
 from providers.diarization import align_diarized_segments, run_pyannote_diarization
 from providers.embedding import extract_embeddings_for_turns
@@ -91,7 +92,11 @@ class TranscriptionPipeline:
         device: str = None,
         hf_token: str = None,
     ):
-        self.device = device or DEVICE
+        # _configured_device preserves the operator's original DEVICE value so
+        # that unload_models() can re-select the best GPU on reload when the
+        # operator specified the generic "cuda" alias (no explicit index).
+        self._configured_device: str = device or DEVICE
+        self.device = self._configured_device
         self.model_size = model_size or WHISPER_MODEL
         self.hf_token = hf_token or HF_TOKEN
         self._whisper = None
@@ -107,6 +112,49 @@ class TranscriptionPipeline:
             self._runner = runner
         return runner
 
+    def models_loaded(self) -> bool:
+        """Return ``True`` if any GPU model is currently held in memory."""
+        return bool(self._whisper or self._diarization or self._embedding_model)
+
+    def unload_models(self) -> None:
+        """Release all GPU model references and free the associated VRAM.
+
+        The pipeline's lazy properties will transparently reload models on the
+        next inference request.  When the configured device is the generic
+        ``"cuda"`` alias (no explicit index), the effective device is updated
+        to the CUDA GPU with the most free memory so the reload lands on the
+        best available device.
+
+        This method is intentionally called through
+        :func:`infra.job_runtime.run_serialized_gpu_work` by the idle-unload
+        daemon so that no concurrent transcription is interrupted.
+        """
+        import gc
+
+        self._whisper = None
+        self._diarization = None
+        self._embedding_model = None
+
+        # Free cached CUDA allocations left behind by the released models.
+        try:
+            import torch
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        # Re-select the best available GPU for the next load when the operator
+        # did not pin a specific device index.
+        if self._configured_device == "cuda":
+            self.device = select_best_cuda_device()
+            logger.info(
+                "GPU models unloaded; next load will use device=%s", self.device
+            )
+        else:
+            logger.info("GPU models unloaded")
+
     @property
     def whisper(self):
         """Lazy-load faster-whisper directly.
@@ -121,7 +169,7 @@ class TranscriptionPipeline:
             # faster_whisper 按需 lazy import，避免在不使用 whisper 的进程里加载 GPU 库
             from faster_whisper import WhisperModel
 
-            compute_type = "float16" if self.device == "cuda" else "int8"
+            compute_type = "float16" if self.device.startswith("cuda") else "int8"
             local_dir = Path("/models") / f"faster-whisper-{self.model_size}"
             model_ref = str(local_dir) if local_dir.exists() else self.model_size
             logger.info(
