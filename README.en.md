@@ -61,30 +61,15 @@ Open `http://localhost:8780` in a browser, upload a recording, wait for results.
 
 > Security: set a strong `API_KEY` in `.env` before exposing this on any network. Without it, anyone can modify your voiceprint library or trigger GPU jobs.
 
-The v0.7.5 public defaults are tuned for clean meeting-recorder audio:
-`DENOISE_MODEL=none`, `DENOISE_SNR_THRESHOLD=10.0`,
-`VOICEPRINT_THRESHOLD=0.75`, `PYANNOTE_MIN_DURATION_OFF=0.5`,
-`MIN_EMBED_DURATION=1.5`, `MAX_EMBED_DURATION=10.0`, and
-`MODEL_IDLE_TIMEOUT_SEC=180` (3 minutes). If an API request omits
-`denoise_model`, the server uses `DENOISE_MODEL`; explicitly send
-`denoise_model=none` to disable denoising for one request.
-`DENOISE_SNR_THRESHOLD` / `snr_threshold` only control DeepFilterNet skip behavior;
-`noisereduce` runs when selected and is not SNR-gated.
-Docker Compose requests all available NVIDIA GPUs by default and does not set
-`CUDA_VISIBLE_DEVICES` inside the container by default. Add it through
-`docker-compose.override.yml` or another explicit operator env override only
-when you want to limit the visible GPU set; inside the container, `cuda:0` is
-the first visible GPU and may not be physical host GPU0.
-`MODEL_IDLE_TIMEOUT_SEC` defaults to 180 seconds (3 minutes). Set it to `0` to
-disable idle unload and keep models resident. When enabled, GPU models unload
-only after the serialized GPU runtime has been idle for that many seconds. On
-the next reload, ASR, diarization, and embedding each choose the visible CUDA
-device with the most free memory during their own lazy load. Fixed settings
-such as `DEVICE=cuda:0` stay pinned and do not auto-move to another GPU.
+The default configuration targets clean meeting-recorder audio: denoising is off,
+GPU models unload after 3 idle minutes, and multi-GPU hosts expose all NVIDIA
+GPUs by default so each model reload can choose the visible device with the most
+free memory.
 
-Full setup + troubleshooting → [`doc/quickstart.en.md`](./doc/quickstart.en.md).
-For all env defaults, API override semantics, and tuning boundaries that are not
-yet public knobs, see [`doc/configuration.en.md`](./doc/configuration.en.md).
+To tune denoising, voiceprint thresholds, GPU visibility, or model residency:
+
+- Full setup + troubleshooting: [`doc/quickstart.en.md`](./doc/quickstart.en.md)
+- Env defaults, API override semantics, and non-public tuning boundaries: [`doc/configuration.en.md`](./doc/configuration.en.md)
 
 ---
 
