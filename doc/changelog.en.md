@@ -4,29 +4,21 @@
 
 ## Unreleased
 
-### Bug Fixes
-
-- Docker Compose now requests all available NVIDIA GPUs by default instead of
-  limiting the container with `CUDA_VISIBLE_DEVICES=0` and `count: 1`. It also
-  no longer injects an empty `CUDA_VISIBLE_DEVICES` by default; operators must
-  use a compose override or explicit env injection to restrict the visible set.
-- ASR/faster-whisper, diarization/pyannote, and embedding/WeSpeaker no longer
-  share one pipeline-level device. Each model chooses the visible GPU with the
-  most free memory during its own lazy load; fixed settings such as
-  `DEVICE=cuda:0` remain pinned and do not auto-move to another GPU.
-
-### Documentation
-
-- Updated README, quickstart, configuration, `.env.example`, and compose
-  comments to explain that `CUDA_VISIBLE_DEVICES` is unset by default, the
-  container can see every Docker-exposed GPU, visibility limits require an
-  explicit override/env injection, and in-container `cuda:N` indexes are
-  remapped from that visible set.
+_No unreleased changes._
 
 ## 0.7.5 — Idle GPU model unload and CI quality gates (2026-04-29)
 
 ### Bug Fixes
 
+- Fixed multi-GPU / per-model lazy-load placement (#20): Docker Compose now
+  requests all available NVIDIA GPUs by default instead of limiting the
+  container with `CUDA_VISIBLE_DEVICES=0` and `count: 1`. It also no longer
+  injects an empty `CUDA_VISIBLE_DEVICES` by default; operators must use a
+  compose override or explicit env injection to restrict the visible set.
+- ASR/faster-whisper, diarization/pyannote, and embedding/WeSpeaker no longer
+  share one pipeline-level device. Each model chooses the visible GPU with the
+  most free memory during its own lazy load; fixed settings such as
+  `DEVICE=cuda:0` remain pinned and do not auto-move to another GPU.
 - Fixed faster-whisper CUDA device arguments: internal torch-facing device
   state can still use `cuda:0` / `cuda:1`, but faster-whisper loads now receive
   `device="cuda"` with the matching `device_index`, avoiding
@@ -68,6 +60,11 @@
   raw-cosine fallback, and full AS-norm validation requires cohort size >=10.
 - Documented `MODEL_IDLE_TIMEOUT_SEC` in the full configuration reference,
   quickstart, `.env.example`, and compose defaults.
+- Updated README, quickstart, configuration, `.env.example`, and compose
+  comments to explain that `CUDA_VISIBLE_DEVICES` is unset by default, the
+  container can see every Docker-exposed GPU, visibility limits require an
+  explicit override/env injection, and in-container `cuda:N` indexes are
+  remapped from that visible set.
 
 ### CI
 
@@ -77,6 +74,13 @@
   when their repository secrets are not configured.
 - Added `REVIEW.md` so automated code review focuses on VoScript-specific
   reliability, privacy, model lifecycle, API, and documentation risks.
+
+### Validation
+
+- Internal live validation covered the 0.7.5 idle unload, multi-GPU lazy-load
+  placement, fixed `DEVICE=cuda:N` pinning, faster-whisper `device_index`,
+  pyannote local snapshot/config loading, and default
+  `MODEL_IDLE_TIMEOUT_SEC=180` behavior.
 
 ## 0.7.4 — Environment defaults and contract prep (2026-04-26)
 
