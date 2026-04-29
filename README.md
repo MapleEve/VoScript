@@ -61,26 +61,12 @@ docker compose up -d --build
 
 > 安全提醒：公网部署前务必在 `.env` 设置强 `API_KEY`，否则任何人都能操作你的声纹库。
 
-v0.7.5 公开默认值面向干净会议录音：`DENOISE_MODEL=none`、
-`DENOISE_SNR_THRESHOLD=10.0`、`VOICEPRINT_THRESHOLD=0.75`、
-`PYANNOTE_MIN_DURATION_OFF=0.5`、`MIN_EMBED_DURATION=1.5`、
-`MAX_EMBED_DURATION=10.0`、`MODEL_IDLE_TIMEOUT_SEC=180`（3 分钟）。API 未传
-`denoise_model` 时使用服务端 `DENOISE_MODEL`；显式传 `denoise_model=none`
-才会只对本次请求关闭降噪。
-`DENOISE_SNR_THRESHOLD` / `snr_threshold` 只控制 DeepFilterNet 的跳过逻辑；
-选择 `noisereduce` 时会直接运行该后端，不受 SNR 门限 gate 控制。
-Docker Compose 默认请求所有可用 NVIDIA GPU，并且默认不在容器内设置
-`CUDA_VISIBLE_DEVICES`；只有通过 `docker-compose.override.yml` 或其它显式
-operator env 注入该变量时，才会限制容器可见卡集合。注意容器内 `cuda:0`
-是可见集合的第 0 张，不一定等于宿主物理 GPU0。
-`MODEL_IDLE_TIMEOUT_SEC` 默认 180 秒（3 分钟）；设为 `0` 可禁用空闲卸载并保持模型
-常驻。启用时，GPU 模型只会在串行 GPU 运行时空闲达到该秒数后卸载；下一次 reload
-时 ASR、diarization 和 embedding 会在各自 lazy load 时分别选择当前空闲显存最多的
-可见 CUDA 设备。显式设置 `DEVICE=cuda:0` 这类固定设备时不会自动漂移到其它卡。
+默认配置面向干净会议录音：不开降噪，GPU 模型空闲 3 分钟后释放；多 GPU 机器默认让容器看到所有 NVIDIA GPU，并在模型重新加载时选择当前空闲显存最多的可见设备。
 
-完整安装步骤 + 排障 → [`doc/quickstart.zh.md`](./doc/quickstart.zh.md)；
-所有 env 默认值、API 覆盖语义和当前未暴露的调参边界见
-[`doc/configuration.zh.md`](./doc/configuration.zh.md)。
+要调整降噪、声纹阈值、GPU 可见性或模型常驻策略：
+
+- 完整安装步骤 + 排障：[`doc/quickstart.zh.md`](./doc/quickstart.zh.md)
+- 所有 env 默认值、API 覆盖语义和当前未暴露的调参边界：[`doc/configuration.zh.md`](./doc/configuration.zh.md)
 
 ---
 
