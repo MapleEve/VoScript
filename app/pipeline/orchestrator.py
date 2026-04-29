@@ -85,6 +85,18 @@ def _load_trusted_pyannote_model(
         return from_pretrained(model_ref, **auth_kwargs)
 
 
+def _faster_whisper_device_kwargs(device: str) -> dict[str, Any]:
+    """Translate torch-style CUDA device strings to faster-whisper kwargs."""
+
+    if not device.startswith("cuda:"):
+        return {"device": device}
+
+    device_kind, _, raw_index = device.partition(":")
+    if raw_index.isdigit():
+        return {"device": device_kind, "device_index": int(raw_index)}
+    return {"device": device}
+
+
 class TranscriptionPipeline:
     def __init__(
         self,
@@ -152,7 +164,7 @@ class TranscriptionPipeline:
             )
             self._whisper = WhisperModel(
                 model_ref,
-                device=self.device,
+                **_faster_whisper_device_kwargs(self.device),
                 compute_type=compute_type,
             )
         return self._whisper

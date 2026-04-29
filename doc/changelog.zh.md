@@ -8,6 +8,12 @@ _暂无变更。_
 
 ## 0.7.5 — GPU 模型空闲卸载与 CI 质量门禁 (2026-04-29)
 
+### Bug 修复
+
+- 修复 faster-whisper CUDA 设备传参：内部仍可用 `cuda:0` / `cuda:1`
+  表示 torch 设备，但加载 faster-whisper 时会转换为 `device="cuda"` 与
+  对应 `device_index`，避免 `unsupported device cuda:0`。
+
 ### 功能
 
 - 新增可选 `MODEL_IDLE_TIMEOUT_SEC`。默认 `0` 保持当前模型常驻行为；设为正数后，
