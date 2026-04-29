@@ -40,8 +40,11 @@ services:
       - JOBS_MAX_CACHE=${JOBS_MAX_CACHE:-200}
       - FFMPEG_TIMEOUT_SEC=${FFMPEG_TIMEOUT_SEC:-1800}
       - MODEL_IDLE_TIMEOUT_SEC=${MODEL_IDLE_TIMEOUT_SEC:-180}
-      # GPU index exposed to the container.  Set to "" to force CPU-only mode.
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      # CUDA_VISIBLE_DEVICES is intentionally not set by default. The GPU
+      # reservation below requests all Docker-exposed GPUs. To restrict the
+      # visible set, add it in docker-compose.override.yml or another explicit
+      # operator env override; container cuda:N indexes are then remapped from
+      # that visible set.
       # Whisper model size.  Pre-download to MODEL_CACHE_DIR/faster-whisper-<size>
       # to avoid downloading from HuggingFace on every cold start.
       - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
@@ -92,5 +95,5 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              count: all
               capabilities: [gpu]

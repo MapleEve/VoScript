@@ -70,8 +70,10 @@ def extract_embeddings_for_turns(
         emb_list = []
         chunks.sort(key=lambda chunk: chunk.shape[1], reverse=True)
         for chunk in chunks[:10]:
-            emb = pipeline.embedding_model(
-                {"waveform": chunk.to(pipeline.device), "sample_rate": target_sr}
+            embedding_model = pipeline.embedding_model
+            embedding_device = getattr(pipeline, "embedding_device", pipeline.device)
+            emb = embedding_model(
+                {"waveform": chunk.to(embedding_device), "sample_rate": target_sr}
             )
             emb_list.append(np.asarray(emb))
         if emb_list:

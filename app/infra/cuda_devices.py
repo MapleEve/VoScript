@@ -21,6 +21,8 @@ def select_best_cuda_device(
 
     if not configured_device.startswith("cuda"):
         return configured_device
+    if ":" in configured_device:
+        return configured_device
 
     try:
         if torch_module is None:

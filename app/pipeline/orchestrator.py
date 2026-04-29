@@ -262,6 +262,9 @@ class TranscriptionPipeline:
     ):
         self._configured_device = device or DEVICE
         self.device = self._configured_device
+        self._whisper_device = None
+        self._diarization_device = None
+        self._embedding_device = None
         self.model_size = model_size or WHISPER_MODEL
         self.hf_token = hf_token or HF_TOKEN
         self._whisper = None
@@ -287,12 +290,26 @@ class TranscriptionPipeline:
         self._whisper = None
         self._diarization = None
         self._embedding_model = None
+        self._whisper_device = None
+        self._diarization_device = None
+        self._embedding_device = None
 
-    def _select_device_for_lazy_load(self) -> None:
+    def _select_device_for_lazy_load(self, device_attr: str) -> str:
+        selected_device = getattr(self, device_attr, None)
+        if selected_device is not None:
+            return selected_device
+
         configured_device = getattr(self, "_configured_device", self.device)
-        if self.has_loaded_models() or not configured_device.startswith("cuda"):
-            return
-        self.device = select_best_cuda_device(configured_device)
+        if configured_device == "cuda":
+            selected_device = select_best_cuda_device(configured_device)
+        else:
+            selected_device = configured_device
+        setattr(self, device_attr, selected_device)
+        return selected_device
+
+    @property
+    def embedding_device(self) -> str:
+        return self._embedding_device or self._configured_device
 
     @property
     def whisper(self):
@@ -305,22 +322,23 @@ class TranscriptionPipeline:
         from the transcriber.
         """
         if self._whisper is None:
-            self._select_device_for_lazy_load()
+            whisper_device = self._select_device_for_lazy_load("_whisper_device")
+            self.device = whisper_device
             # faster_whisper 按需 lazy import，避免在不使用 whisper 的进程里加载 GPU 库
             from faster_whisper import WhisperModel
 
-            compute_type = "float16" if self.device.startswith("cuda") else "int8"
+            compute_type = "float16" if whisper_device.startswith("cuda") else "int8"
             local_dir = Path("/models") / f"faster-whisper-{self.model_size}"
             model_ref = str(local_dir) if local_dir.exists() else self.model_size
             logger.info(
                 "Loading faster-whisper %s on %s (compute_type=%s)",
                 model_ref,
-                self.device,
+                whisper_device,
                 compute_type,
             )
             self._whisper = WhisperModel(
                 model_ref,
-                **_faster_whisper_device_kwargs(self.device),
+                **_faster_whisper_device_kwargs(whisper_device),
                 compute_type=compute_type,
             )
         return self._whisper
@@ -328,7 +346,9 @@ class TranscriptionPipeline:
     @property
     def diarization(self):
         if self._diarization is None:
-            self._select_device_for_lazy_load()
+            diarization_device = self._select_device_for_lazy_load(
+                "_diarization_device"
+            )
             from pyannote.audio import Pipeline as PyannotePipeline
 
             model_ref = resolve_hf_model_ref(
@@ -348,8 +368,8 @@ class TranscriptionPipeline:
                 model_ref,
                 self.hf_token,
             )
-            _dev = self.device if ":" in self.device else "cuda:0"
-            if self.device.startswith("cuda"):
+            _dev = diarization_device if ":" in diarization_device else "cuda:0"
+            if diarization_device.startswith("cuda"):
                 self._diarization.to(torch.device(_dev))
             # Suppress over-segmentation of short backchannel turns
             try:
@@ -370,7 +390,7 @@ class TranscriptionPipeline:
     @property
     def embedding_model(self):
         if self._embedding_model is None:
-            self._select_device_for_lazy_load()
+            embedding_device = self._select_device_for_lazy_load("_embedding_device")
             from pyannote.audio import Inference, Model
 
             model_ref = resolve_hf_model_ref(
@@ -385,7 +405,7 @@ class TranscriptionPipeline:
                 model_ref,
                 self.hf_token,
             )
-            model = model.to(torch.device(self.device))
+            model = model.to(torch.device(embedding_device))
             # window="whole" returns one embedding vector per full chunk —
             # exactly what we need for per-turn embeddings.
             self._embedding_model = Inference(model, window="whole")

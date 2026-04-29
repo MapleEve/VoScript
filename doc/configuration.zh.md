@@ -32,10 +32,10 @@
 | `MODEL_CACHE_DIR` | `./models` | compose 用的宿主模型缓存目录，挂载到容器 `/cache` 和只读 `/models`。 |
 | `APP_UID` / `APP_GID` | `1000` / `1000` | 容器运行用户。宿主 `DATA_DIR` 和 `MODEL_CACHE_DIR` 必须让这个 uid/gid 可写。 |
 | `DEVICE` | `cuda` | pipeline 推理设备。CPU/macOS/无 NVIDIA 环境设为 `cpu`。 |
-| `CUDA_VISIBLE_DEVICES` | `0` | NVIDIA GPU 选择。设为空字符串可配合 `DEVICE=cpu` 做 CPU-only。 |
+| `CUDA_VISIBLE_DEVICES` | 未设置 | 可选 NVIDIA 可见卡限制。默认不注入该变量，compose 会请求 Docker 暴露的所有可用 GPU。只有需要把容器限制到某些卡时，才通过 `docker-compose.override.yml` 或显式 operator env 注入；容器内 `cuda:0` 是可见集合的第 0 张，不一定等于宿主物理 GPU0。CPU-only 请设置 `DEVICE=cpu`。 |
 | `FFMPEG_TIMEOUT_SEC` | `1800` | ffmpeg 转码超时秒数，超时返回 `504`。 |
 | `JOBS_MAX_CACHE` | `200` | 内存 job LRU 上限；被淘汰的完成任务仍可从磁盘 `status.json` / `result.json` 查询。 |
-| `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU 模型空闲卸载超时，默认 180 秒（3 分钟）。设为 `0` 可关闭空闲卸载并保持模型常驻。开启后，只有串行 GPU 运行时空闲达到该秒数才释放已加载模型；下一次 lazy load 会选择当前可见 CUDA 中空闲显存最多的设备。 |
+| `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU 模型空闲卸载超时，默认 180 秒（3 分钟）。设为 `0` 可关闭空闲卸载并保持模型常驻。开启后，只有串行 GPU 运行时空闲达到该秒数才释放已加载模型；下一次 reload 时 ASR、diarization 和 embedding 会在各自 lazy load 时分别选择当前可见 CUDA 中空闲显存最多的设备。 |
 
 `MODELS_DIR` 和 `LANGUAGE` 在配置模块里有定义，但 v0.7.5 的主 HTTP 转写路径
 没有把它们作为稳定公开调参入口使用：Whisper 本地 checkpoint 查找仍使用
@@ -46,6 +46,23 @@
 GPU 串行 semaphore，并且会在拿到 semaphore 后重新读取 idle 时间戳；如果等待期间
 有新任务排队或刚完成，不会基于等待前的旧判断卸载。CUDA cache 释放是 best-effort，
 CPU-only 环境会安全跳过。
+
+Docker Compose 默认用 `count: all` 请求所有可用 NVIDIA GPU，且默认不设置
+`CUDA_VISIBLE_DEVICES`，所以容器能看到 Docker 暴露的全部 GPU。`DEVICE=cuda`
+表示让每个模型在自身 lazy load 时按当前空闲显存自动选可见卡；`DEVICE=cuda:0`
+或其它带索引的值表示固定到容器内对应可见索引，不会自动切到别的卡。
+
+如需限制可见卡，建议在本地创建不提交的 `docker-compose.override.yml`：
+
+```yaml
+services:
+  voscript:
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
+```
+
+然后在本地 `.env` 或启动命令里显式设置 `CUDA_VISIBLE_DEVICES=1,3`。
+设置后容器内 `cuda:0` 会映射到可见集合的第 0 张卡，而不是宿主物理 GPU0。
 
 ## Hugging Face 与模型缓存
 

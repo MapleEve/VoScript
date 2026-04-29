@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import os
+from types import ModuleType
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +35,7 @@ import providers.diarization.default as diarization_default
 from providers.diarization.default import default_diarization_provider
 from providers.embedding import default_speaker_embedding_provider
 import providers.embedding.default as embedding_default
+import pipeline.orchestrator as orchestrator
 from providers.normalize import convert_to_wav
 
 
@@ -803,4 +805,151 @@ def test_default_embedding_provider_uses_pipeline_embedding_resource(monkeypatch
         ("embedding_model", 16000, 32000),
         ("to", "cpu", 32000),
         ("embedding_model", 16000, 32000),
+    ]
+
+
+def test_default_embedding_provider_moves_chunks_to_embedding_device(monkeypatch):
+    pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
+    pipeline.device = "cuda:0"
+    pipeline._embedding_device = "cuda:1"
+    calls = []
+
+    class FakeTensor:
+        def __init__(self, channels, frames):
+            self.shape = (channels, frames)
+
+        def mean(self, dim=0, keepdim=True):
+            assert dim == 0
+            return FakeTensor(1, self.shape[1])
+
+        def to(self, device):
+            calls.append(("to", device, self.shape[1]))
+            return self
+
+    class FakeEmbeddingModel:
+        def __call__(self, payload):
+            calls.append(("embedding_model", payload["waveform"].shape[1]))
+            return [1.0, 2.0]
+
+    class FakeInfo:
+        sample_rate = 16000
+
+    pipeline._embedding_model = FakeEmbeddingModel()
+    monkeypatch.setattr(
+        embedding_default.torchaudio, "info", lambda audio_path: FakeInfo()
+    )
+    monkeypatch.setattr(
+        embedding_default.torchaudio,
+        "load",
+        lambda audio_path, frame_offset, num_frames: (FakeTensor(1, num_frames), 16000),
+    )
+
+    result = default_speaker_embedding_provider.extract_embeddings(
+        SpeakerEmbeddingRequest(
+            pipeline=pipeline,
+            audio_path="demo.wav",
+            diarization_turns=[
+                {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0},
+            ],
+        )
+    )
+
+    assert result.speaker_embeddings["SPEAKER_00"].tolist() == [1.0, 2.0]
+    assert calls == [
+        ("to", "cuda:1", 32000),
+        ("embedding_model", 32000),
+    ]
+
+
+def test_default_embedding_provider_uses_selected_device_after_first_lazy_load(
+    monkeypatch,
+):
+    pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
+    pipeline.device = "cuda"
+    pipeline._configured_device = "cuda"
+    pipeline._embedding_device = None
+    pipeline._embedding_model = None
+    pipeline.hf_token = None
+    calls = []
+
+    class FakeTensor:
+        def __init__(self, channels, frames):
+            self.shape = (channels, frames)
+
+        def mean(self, dim=0, keepdim=True):
+            assert dim == 0
+            return FakeTensor(1, self.shape[1])
+
+        def to(self, device):
+            calls.append(("chunk_to", device, self.shape[1]))
+            return self
+
+    class FakeInfo:
+        sample_rate = 16000
+
+    class FakeEmbeddingModel:
+        @classmethod
+        def from_pretrained(cls, model_ref, use_auth_token=None):
+            calls.append(("embedding_load", model_ref, use_auth_token))
+            return cls()
+
+        def to(self, device):
+            calls.append(("model_to", device))
+            return self
+
+    class FakeInference:
+        def __init__(self, model, window):
+            calls.append(("inference", window))
+
+        def __call__(self, payload):
+            calls.append(("embedding_model", payload["waveform"].shape[1]))
+            return [1.0, 2.0]
+
+    pyannote_audio = ModuleType("pyannote.audio")
+    pyannote_audio.Model = FakeEmbeddingModel
+    pyannote_audio.Inference = FakeInference
+
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+    monkeypatch.setattr(
+        orchestrator,
+        "resolve_hf_model_ref",
+        lambda repo_id, *, token, purpose: repo_id,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "select_best_cuda_device",
+        lambda configured: calls.append(("select", configured)) or "cuda:1",
+    )
+    monkeypatch.setattr(
+        embedding_default.torchaudio, "info", lambda audio_path: FakeInfo()
+    )
+    monkeypatch.setattr(
+        embedding_default.torchaudio,
+        "load",
+        lambda audio_path, frame_offset, num_frames: (FakeTensor(1, num_frames), 16000),
+    )
+
+    result = default_speaker_embedding_provider.extract_embeddings(
+        SpeakerEmbeddingRequest(
+            pipeline=pipeline,
+            audio_path="demo.wav",
+            diarization_turns=[
+                {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0},
+            ],
+        )
+    )
+
+    assert result.speaker_embeddings["SPEAKER_00"].tolist() == [1.0, 2.0]
+    assert pipeline._embedding_device == "cuda:1"
+    assert calls == [
+        ("select", "cuda"),
+        (
+            "embedding_load",
+            "pyannote/wespeaker-voxceleb-resnet34-LM",
+            None,
+        ),
+        ("model_to", "cuda:1"),
+        ("inference", "whole"),
+        ("chunk_to", "cuda:1", 32000),
+        ("embedding_model", 32000),
     ]
