@@ -194,7 +194,8 @@ A few worth knowing about:
 | `APP_GID` | `1000` | same, gid |
 | `JOBS_MAX_CACHE` | `200` | LRU cap for the in-memory job dictionary; evicted jobs remain queryable via disk status.json |
 | `FFMPEG_TIMEOUT_SEC` | `1800` | Timeout in seconds for ffmpeg conversion; returns 504 on expiry |
-| `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU model idle-unload timeout, defaulting to 180 seconds (3 minutes); set `0` to disable idle unload and keep models resident, and enabled values reselect the best CUDA device on the next lazy load |
+| `CUDA_VISIBLE_DEVICES` | empty | Optional NVIDIA visibility limit; by default compose requests all GPUs. When set, in-container `cuda:N` indexes are remapped from the visible set and may not match physical host GPU numbers |
+| `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU model idle-unload timeout, defaulting to 180 seconds (3 minutes); set `0` to disable idle unload and keep models resident. When enabled, ASR, diarization, and embedding each reselect the best visible CUDA device on their next lazy load |
 | `ALLOW_NO_AUTH` | `0` | Set to 1 to suppress the startup warning when no API_KEY is configured (explicitly confirms unauthenticated mode) |
 | `DENOISE_MODEL` | `none` | Service default denoise backend: `none`, `deepfilternet`, or `noisereduce`; API requests may override it per job |
 | `DENOISE_SNR_THRESHOLD` | `10.0` | DeepFilterNet SNR gate in dB; audio at or above this value skips DeepFilterNet when `deepfilternet` is selected; `noisereduce` is not gated |

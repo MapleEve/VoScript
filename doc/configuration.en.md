@@ -34,10 +34,10 @@ parameters yet.
 | `MODEL_CACHE_DIR` | `./models` | Host model-cache directory used by compose, mounted to `/cache` and read-only `/models`. |
 | `APP_UID` / `APP_GID` | `1000` / `1000` | Container runtime user. Host `DATA_DIR` and `MODEL_CACHE_DIR` must be writable by this uid/gid. |
 | `DEVICE` | `cuda` | Pipeline inference device. Use `cpu` for CPU-only, macOS, or non-NVIDIA hosts. |
-| `CUDA_VISIBLE_DEVICES` | `0` | NVIDIA GPU selection. Use an empty value together with `DEVICE=cpu` for CPU-only mode. |
+| `CUDA_VISIBLE_DEVICES` | empty | Optional NVIDIA visibility limit. By default it is unset and compose requests all available GPUs. Set it only to restrict the visible GPU set; inside the container, `cuda:0` is the first visible GPU and may not be physical host GPU0. For CPU-only mode, set `DEVICE=cpu`. |
 | `FFMPEG_TIMEOUT_SEC` | `1800` | ffmpeg conversion timeout in seconds; timeout returns `504`. |
 | `JOBS_MAX_CACHE` | `200` | In-memory job LRU limit. Evicted completed jobs remain queryable from disk `status.json` / `result.json`. |
-| `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU model idle-unload timeout, defaulting to 180 seconds (3 minutes). Set `0` to disable idle unload and keep models resident. When enabled, loaded models are released only after the serialized GPU runtime has been idle for this many seconds; the next lazy load chooses the visible CUDA device with the most free memory. |
+| `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU model idle-unload timeout, defaulting to 180 seconds (3 minutes). Set `0` to disable idle unload and keep models resident. When enabled, loaded models are released only after the serialized GPU runtime has been idle for this many seconds; on the next reload, ASR, diarization, and embedding each choose the visible CUDA device with the most free memory during their own lazy load. |
 
 `MODELS_DIR` and `LANGUAGE` are defined in the config module, but v0.7.5's main
 HTTP transcription path does not use them as stable public tuning knobs:
@@ -50,6 +50,11 @@ daemon shares the same serialized GPU semaphore as transcription work and
 rechecks the idle timestamp after acquiring it, so a queued or freshly completed
 job cannot be unloaded based on a stale pre-wait observation. CUDA cache release
 is best-effort and is skipped safely on CPU-only hosts.
+
+Docker Compose requests all available NVIDIA GPUs with `count: all` by default.
+`DEVICE=cuda` lets each model choose the best visible GPU when it lazy-loads;
+`DEVICE=cuda:0` or another indexed value pins to that in-container visible
+index and will not auto-move to another GPU.
 
 ## Hugging Face and Model Cache
 

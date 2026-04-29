@@ -804,3 +804,56 @@ def test_default_embedding_provider_uses_pipeline_embedding_resource(monkeypatch
         ("to", "cpu", 32000),
         ("embedding_model", 16000, 32000),
     ]
+
+
+def test_default_embedding_provider_moves_chunks_to_embedding_device(monkeypatch):
+    pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
+    pipeline.device = "cuda:0"
+    pipeline._embedding_device = "cuda:1"
+    calls = []
+
+    class FakeTensor:
+        def __init__(self, channels, frames):
+            self.shape = (channels, frames)
+
+        def mean(self, dim=0, keepdim=True):
+            assert dim == 0
+            return FakeTensor(1, self.shape[1])
+
+        def to(self, device):
+            calls.append(("to", device, self.shape[1]))
+            return self
+
+    class FakeEmbeddingModel:
+        def __call__(self, payload):
+            calls.append(("embedding_model", payload["waveform"].shape[1]))
+            return [1.0, 2.0]
+
+    class FakeInfo:
+        sample_rate = 16000
+
+    pipeline._embedding_model = FakeEmbeddingModel()
+    monkeypatch.setattr(
+        embedding_default.torchaudio, "info", lambda audio_path: FakeInfo()
+    )
+    monkeypatch.setattr(
+        embedding_default.torchaudio,
+        "load",
+        lambda audio_path, frame_offset, num_frames: (FakeTensor(1, num_frames), 16000),
+    )
+
+    result = default_speaker_embedding_provider.extract_embeddings(
+        SpeakerEmbeddingRequest(
+            pipeline=pipeline,
+            audio_path="demo.wav",
+            diarization_turns=[
+                {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0},
+            ],
+        )
+    )
+
+    assert result.speaker_embeddings["SPEAKER_00"].tolist() == [1.0, 2.0]
+    assert calls == [
+        ("to", "cuda:1", 32000),
+        ("embedding_model", 32000),
+    ]

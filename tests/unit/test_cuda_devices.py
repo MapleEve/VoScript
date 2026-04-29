@@ -35,6 +35,35 @@ def test_select_best_cuda_device_uses_most_free_memory():
     assert select_best_cuda_device("cuda", torch_module=torch_module) == "cuda:1"
 
 
+def test_select_best_cuda_device_prefers_gpu_with_more_free_memory_6g_vs_12g():
+    select_best_cuda_device = importlib.import_module(
+        "infra.cuda_devices"
+    ).select_best_cuda_device
+    gib = 1024**3
+    torch_module = SimpleNamespace(
+        cuda=_FakeCuda(available=True, free_memory=[6 * gib, 12 * gib])
+    )
+
+    assert select_best_cuda_device("cuda", torch_module=torch_module) == "cuda:1"
+
+
+def test_select_best_cuda_device_keeps_explicit_cuda_index_without_probe():
+    select_best_cuda_device = importlib.import_module(
+        "infra.cuda_devices"
+    ).select_best_cuda_device
+
+    class FailIfProbed:
+        def __getattr__(self, name):
+            raise AssertionError("fixed cuda devices must not be probed")
+
+    assert (
+        select_best_cuda_device(
+            "cuda:0", torch_module=SimpleNamespace(cuda=FailIfProbed())
+        )
+        == "cuda:0"
+    )
+
+
 def test_select_best_cuda_device_falls_back_to_configured_device_on_probe_failure():
     select_best_cuda_device = importlib.import_module(
         "infra.cuda_devices"
