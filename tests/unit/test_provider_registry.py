@@ -245,10 +245,13 @@ def test_default_asr_provider_uses_pipeline_whisper_resource():
     ]
 
 
-def test_default_diarization_provider_uses_pipeline_diarizer_and_alignment(monkeypatch):
+def test_default_diarization_provider_uses_pipeline_diarizer_and_alignment(
+    monkeypatch, caplog
+):
     pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
     pipeline.device = "cpu"
     calls = []
+    perf_values = iter([5.0, 8.0])
 
     class FakeDiarizationResult:
         def itertracks(self, yield_label=False):
@@ -292,18 +295,25 @@ def test_default_diarization_provider_uses_pipeline_diarizer_and_alignment(monke
         },
         raising=False,
     )
-
-    result = default_diarization_provider.diarize(
-        DiarizationRequest(
-            pipeline=pipeline,
-            audio_path="demo.wav",
-            transcription_result={"segments": [], "language": "en"},
-            min_speakers=1,
-            max_speakers=2,
-        )
+    monkeypatch.setattr(
+        diarization_default.time,
+        "perf_counter",
+        lambda: next(perf_values),
     )
 
+    with caplog.at_level("INFO", logger=diarization_default.logger.name):
+        result = default_diarization_provider.diarize(
+            DiarizationRequest(
+                pipeline=pipeline,
+                audio_path="demo.wav",
+                transcription_result={"segments": [], "language": "en"},
+                min_speakers=1,
+                max_speakers=2,
+            )
+        )
+
     assert calls == [("diarizer", "demo.wav", {"min_speakers": 1, "max_speakers": 2})]
+    assert "Loaded WhisperX alignment model in 3.00s" in caplog.text
     assert result.turns == [{"start": 0.0, "end": 1.2, "speaker": "SPEAKER_00"}]
     assert result.aligned_segments == [
         {

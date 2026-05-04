@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from contextlib import contextmanager
 from collections.abc import Callable
 from inspect import Parameter, signature
@@ -242,10 +243,18 @@ def align_diarized_segments_with_metadata(
             language,
             pipeline.device,
         )
+        load_started = time.perf_counter()
         with _cache_only_alignment_environment():
             align_model, align_metadata = whisperx.load_align_model(
                 **load_kwargs,
             )
+        logger.info(
+            "Loaded WhisperX alignment model in %.2fs (language=%s, model_source=%s, device=%s)",
+            time.perf_counter() - load_started,
+            language,
+            model_source,
+            pipeline.device,
+        )
         aligned_result = whisperx.align(
             segments,
             align_model,

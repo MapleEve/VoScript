@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from config import DENOISE_MODEL, DENOISE_SNR_THRESHOLD
 from pipeline.contracts import (
@@ -22,8 +23,12 @@ def _load_deepfilternet():
     if _df_model is None:
         import df as _df_pkg
 
+        load_started = time.perf_counter()
         _df_model, _df_state, _ = _df_pkg.init_df()
-        logger.info("DeepFilterNet model loaded")
+        logger.info(
+            "Loaded DeepFilterNet model in %.2fs",
+            time.perf_counter() - load_started,
+        )
     return _df_model, _df_state
 
 

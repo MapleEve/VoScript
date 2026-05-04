@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from inspect import signature
 from pathlib import Path
+from types import ModuleType
 
 import infra.audio.hash_index as hash_index_module
 import infra.audio as audio_infra
@@ -98,6 +100,27 @@ def test_denoise_api_snr_threshold_overrides_env_default(monkeypatch, tmp_path):
     assert result.applied is False
     assert result.model == "deepfilternet"
     assert result.output_path == wav_path
+
+
+def test_deepfilternet_lazy_load_logs_elapsed_time(monkeypatch, caplog):
+    monkeypatch.setattr(enhance_default, "_df_model", None)
+    monkeypatch.setattr(enhance_default, "_df_state", None)
+    perf_values = iter([1.0, 4.5])
+    df_module = ModuleType("df")
+    df_module.init_df = lambda: ("model", "state", None)
+
+    monkeypatch.setitem(sys.modules, "df", df_module)
+    monkeypatch.setattr(
+        enhance_default.time,
+        "perf_counter",
+        lambda: next(perf_values),
+    )
+
+    with caplog.at_level("INFO", logger=enhance_default.logger.name):
+        model, state = enhance_default._load_deepfilternet()
+
+    assert (model, state) == ("model", "state")
+    assert "Loaded DeepFilterNet model in 3.50s" in caplog.text
 
 
 def test_hash_index_infra_requires_completed_result(monkeypatch, tmp_path):

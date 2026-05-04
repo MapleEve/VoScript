@@ -104,6 +104,24 @@ def test_cpu_lazy_load_does_not_probe_cuda(monkeypatch):
     assert pipeline.device == "cpu"
 
 
+def test_whisper_lazy_load_logs_elapsed_time(monkeypatch, caplog):
+    pipeline = _new_pipeline(device="cpu")
+    _install_fake_faster_whisper(monkeypatch, [])
+    perf_values = iter([10.0, 12.25])
+
+    monkeypatch.setattr(orchestrator.Path, "exists", lambda self: False)
+    monkeypatch.setattr(
+        orchestrator.time,
+        "perf_counter",
+        lambda: next(perf_values),
+    )
+
+    with caplog.at_level("INFO", logger=orchestrator.logger.name):
+        _ = pipeline.whisper
+
+    assert "Loaded faster-whisper model in 2.25s" in caplog.text
+
+
 def test_whisper_lazy_load_keeps_unindexed_cuda_supported(monkeypatch):
     pipeline = _new_pipeline(device="cuda")
     loaded_models = []
@@ -176,13 +194,14 @@ def test_fixed_cuda_device_does_not_probe_best_device(monkeypatch):
     ]
 
 
-def test_each_model_lazy_load_selects_its_own_cuda_device(monkeypatch):
+def test_each_model_lazy_load_selects_its_own_cuda_device(monkeypatch, caplog):
     pipeline = _new_pipeline(device="cuda")
     loaded_models = []
     fake_model = _install_fake_faster_whisper(monkeypatch, loaded_models)
     selected_devices = iter(["cuda:0", "cuda:1", "cuda:1"])
     selector_calls = []
     pyannote_calls = []
+    perf_values = iter([1.0, 2.0, 3.0, 4.5, 10.0, 13.0])
 
     monkeypatch.setattr(orchestrator.Path, "exists", lambda self: False)
     monkeypatch.setattr(
@@ -199,6 +218,11 @@ def test_each_model_lazy_load_selects_its_own_cuda_device(monkeypatch):
         orchestrator,
         "_localize_pyannote_diarization_config",
         lambda model_ref, *, token: model_ref,
+    )
+    monkeypatch.setattr(
+        orchestrator.time,
+        "perf_counter",
+        lambda: next(perf_values),
     )
 
     class FakeDiarization:
@@ -232,11 +256,15 @@ def test_each_model_lazy_load_selects_its_own_cuda_device(monkeypatch):
     pyannote_audio.Inference = FakeInference
     monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
 
-    assert pipeline.whisper.__class__ is fake_model
-    assert pipeline.diarization.__class__ is FakeDiarization
-    assert pipeline.embedding_model.__class__ is FakeInference
+    with caplog.at_level("INFO", logger=orchestrator.logger.name):
+        assert pipeline.whisper.__class__ is fake_model
+        assert pipeline.diarization.__class__ is FakeDiarization
+        assert pipeline.embedding_model.__class__ is FakeInference
 
     assert selector_calls == ["cuda", "cuda", "cuda"]
+    assert "Loaded faster-whisper model in 1.00s" in caplog.text
+    assert "Loaded pyannote diarization model in 1.50s" in caplog.text
+    assert "Loaded WeSpeaker speaker encoder in 3.00s" in caplog.text
     assert pipeline._whisper_device == "cuda:0"
     assert pipeline._diarization_device == "cuda:1"
     assert pipeline._embedding_device == "cuda:1"
