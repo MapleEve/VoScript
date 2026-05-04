@@ -26,9 +26,11 @@ def _load_deepfilternet():
         load_started = time.perf_counter()
         _df_model, _df_state, _ = _df_pkg.init_df()
         logger.info(
-            "Loaded DeepFilterNet model in %.2fs",
+            "Loaded DeepFilterNet model in %.2fs (cold_load=True)",
             time.perf_counter() - load_started,
         )
+    else:
+        logger.info("Reusing DeepFilterNet model (hot reuse)")
     return _df_model, _df_state
 
 
@@ -86,9 +88,17 @@ class ConditionalDenoiseEnhancer(AudioEnhancementProvider):
             import torch
             import torchaudio
 
+            processing_started = time.perf_counter()
             snr_db = _estimate_snr(request.wav_path)
             if snr_db >= threshold:
                 logger.info("DeepFilterNet skipped (SNR=%.1fdB, clean audio)", snr_db)
+                logger.info(
+                    "enhance_processing_timing model=deepfilternet elapsed_s=%.3f "
+                    "applied=False reason=clean_audio snr_db=%.1f threshold=%.1f",
+                    time.perf_counter() - processing_started,
+                    snr_db,
+                    threshold,
+                )
                 return AudioEnhancementResult(
                     input_path=request.wav_path,
                     output_path=request.wav_path,
@@ -105,6 +115,7 @@ class ConditionalDenoiseEnhancer(AudioEnhancementProvider):
             import df as _df_pkg
 
             audio, sr = torchaudio.load(str(request.wav_path))
+            input_sample_rate = sr
             if sr != df_state.sr():
                 audio = torchaudio.functional.resample(audio, sr, df_state.sr())
             audio = audio.contiguous()
@@ -116,22 +127,30 @@ class ConditionalDenoiseEnhancer(AudioEnhancementProvider):
                 df_state.sr(),
             )
             logger.info(
-                "DeepFilterNet: denoised %s -> %s",
-                request.wav_path.name,
-                out_path.name,
+                "enhance_processing_timing model=deepfilternet elapsed_s=%.3f "
+                "applied=True reason=enhanced snr_db=%.1f threshold=%.1f "
+                "device=%s input_sample_rate=%d output_sample_rate=%d",
+                time.perf_counter() - processing_started,
+                snr_db,
+                threshold,
+                getattr(audio, "device", "unknown"),
+                input_sample_rate,
+                df_state.sr(),
             )
 
         elif effective_model == "noisereduce":
             import noisereduce as nr
             import soundfile as sf
 
+            processing_started = time.perf_counter()
             data, sr = sf.read(str(request.wav_path), dtype="float32")
             reduced = nr.reduce_noise(y=data, sr=sr, stationary=True)
             sf.write(str(out_path), reduced, sr)
             logger.info(
-                "noisereduce: denoised %s -> %s",
-                request.wav_path.name,
-                out_path.name,
+                "enhance_processing_timing model=noisereduce elapsed_s=%.3f "
+                "applied=True reason=enhanced sample_rate=%d",
+                time.perf_counter() - processing_started,
+                sr,
             )
 
         else:

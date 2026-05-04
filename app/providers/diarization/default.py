@@ -260,7 +260,8 @@ def align_diarized_segments_with_metadata(
                 **load_kwargs,
             )
         logger.info(
-            "Loaded WhisperX alignment model in %.2fs (language=%s, model_source=%s, device=%s)",
+            "Loaded WhisperX alignment model in %.2fs "
+            "(cold_load=True, language=%s, model_source=%s, device=%s)",
             time.perf_counter() - load_started,
             language,
             model_source,

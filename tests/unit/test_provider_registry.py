@@ -364,7 +364,7 @@ def test_default_diarization_provider_uses_pipeline_diarizer_and_alignment(
 
     assert calls == [("diarizer", "demo.wav", {"min_speakers": 1, "max_speakers": 2})]
     assert "diarization_processing_timing model=pyannote elapsed_s=3.000" in caplog.text
-    assert "Loaded WhisperX alignment model in 3.00s" in caplog.text
+    assert "Loaded WhisperX alignment model in 3.00s (cold_load=True" in caplog.text
     assert "alignment_processing_timing model=whisperx elapsed_s=1.250" in caplog.text
     assert result.turns == [{"start": 0.0, "end": 1.2, "speaker": "SPEAKER_00"}]
     assert result.aligned_segments == [
