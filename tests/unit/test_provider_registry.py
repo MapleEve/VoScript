@@ -30,6 +30,7 @@ from pipeline.registry import (
     unregister_provider,
 )
 from providers import maybe_denoise
+import providers.asr.default as asr_default
 from providers.asr.default import default_asr_provider
 import providers.diarization.default as diarization_default
 from providers.diarization.default import default_diarization_provider
@@ -108,6 +109,55 @@ def test_default_providers_are_listed_and_resolvable():
     assert available_providers("artifacts") == ("default",)
     assert available_providers("input_normalization") == ("default",)
     assert available_providers("enhancement") == ("default",)
+
+
+def test_default_asr_provider_times_materialized_segments(monkeypatch, caplog):
+    events = []
+    perf_values = iter([10.0, 12.5])
+
+    class FakeSegment:
+        start = 0.0
+        end = 1.25
+        text = " hello "
+
+    class FakeWhisper:
+        def transcribe(self, audio_path, **kwargs):
+            events.append(("transcribe", audio_path, kwargs["language"]))
+
+            def iter_segments():
+                events.append("materialized")
+                yield FakeSegment()
+
+            return iter_segments(), SimpleNamespace(language="en")
+
+    pipeline = SimpleNamespace(whisper=FakeWhisper())
+    monkeypatch.setattr(
+        asr_default.time,
+        "perf_counter",
+        lambda: events.append("perf") or next(perf_values),
+    )
+
+    with caplog.at_level("INFO", logger=asr_default.logger.name):
+        result = default_asr_provider.transcribe(
+            ASRRequest(
+                pipeline=pipeline,
+                audio_path="/private/audio.wav",
+                language="en",
+            )
+        )
+
+    assert result.transcription_result["segments"] == [
+        {"start": 0.0, "end": 1.25, "text": "hello"}
+    ]
+    assert events == [
+        "perf",
+        ("transcribe", "/private/audio.wav", "en"),
+        "materialized",
+        "perf",
+    ]
+    assert "asr_processing_timing model=faster-whisper elapsed_s=2.500" in caplog.text
+    assert "segment_count=1" in caplog.text
+    assert "/private" not in caplog.text
 
 
 def test_registry_named_overrides_drive_compatibility_helpers(tmp_path):
@@ -251,7 +301,7 @@ def test_default_diarization_provider_uses_pipeline_diarizer_and_alignment(
     pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
     pipeline.device = "cpu"
     calls = []
-    perf_values = iter([5.0, 8.0])
+    perf_values = iter([5.0, 8.0, 10.0, 13.0, 20.0, 21.25])
 
     class FakeDiarizationResult:
         def itertracks(self, yield_label=False):
@@ -313,7 +363,9 @@ def test_default_diarization_provider_uses_pipeline_diarizer_and_alignment(
         )
 
     assert calls == [("diarizer", "demo.wav", {"min_speakers": 1, "max_speakers": 2})]
+    assert "diarization_processing_timing model=pyannote elapsed_s=3.000" in caplog.text
     assert "Loaded WhisperX alignment model in 3.00s" in caplog.text
+    assert "alignment_processing_timing model=whisperx elapsed_s=1.250" in caplog.text
     assert result.turns == [{"start": 0.0, "end": 1.2, "speaker": "SPEAKER_00"}]
     assert result.aligned_segments == [
         {
@@ -818,11 +870,14 @@ def test_default_embedding_provider_uses_pipeline_embedding_resource(monkeypatch
     ]
 
 
-def test_default_embedding_provider_moves_chunks_to_embedding_device(monkeypatch):
+def test_default_embedding_provider_moves_chunks_to_embedding_device(
+    monkeypatch, caplog
+):
     pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
     pipeline.device = "cuda:0"
     pipeline._embedding_device = "cuda:1"
     calls = []
+    perf_values = iter([30.0, 30.75])
 
     class FakeTensor:
         def __init__(self, channels, frames):
@@ -853,18 +908,26 @@ def test_default_embedding_provider_moves_chunks_to_embedding_device(monkeypatch
         "load",
         lambda audio_path, frame_offset, num_frames: (FakeTensor(1, num_frames), 16000),
     )
-
-    result = default_speaker_embedding_provider.extract_embeddings(
-        SpeakerEmbeddingRequest(
-            pipeline=pipeline,
-            audio_path="demo.wav",
-            diarization_turns=[
-                {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0},
-            ],
-        )
+    monkeypatch.setattr(
+        embedding_default.time,
+        "perf_counter",
+        lambda: next(perf_values),
     )
 
+    with caplog.at_level("INFO", logger=embedding_default.logger.name):
+        result = default_speaker_embedding_provider.extract_embeddings(
+            SpeakerEmbeddingRequest(
+                pipeline=pipeline,
+                audio_path="demo.wav",
+                diarization_turns=[
+                    {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0},
+                ],
+            )
+        )
+
     assert result.speaker_embeddings["SPEAKER_00"].tolist() == [1.0, 2.0]
+    assert "embedding_processing_timing model=wespeaker elapsed_s=0.750" in caplog.text
+    assert "speaker_count=1" in caplog.text
     assert calls == [
         ("to", "cuda:1", 32000),
         ("embedding_model", 32000),

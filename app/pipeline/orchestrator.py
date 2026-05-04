@@ -344,10 +344,15 @@ class TranscriptionPipeline:
                 compute_type=compute_type,
             )
             logger.info(
-                "Loaded faster-whisper model in %.2fs (device=%s, compute_type=%s)",
+                "Loaded faster-whisper model in %.2fs (cold_load=True, device=%s, compute_type=%s)",
                 time.perf_counter() - load_started,
                 whisper_device,
                 compute_type,
+            )
+        else:
+            logger.info(
+                "Reusing faster-whisper model (hot reuse, device=%s)",
+                getattr(self, "_whisper_device", None) or getattr(self, "device", ""),
             )
         return self._whisper
 
@@ -381,7 +386,7 @@ class TranscriptionPipeline:
             if diarization_device.startswith("cuda"):
                 self._diarization.to(torch.device(_dev))
             logger.info(
-                "Loaded pyannote diarization model in %.2fs (device=%s)",
+                "Loaded pyannote diarization model in %.2fs (cold_load=True, device=%s)",
                 time.perf_counter() - load_started,
                 diarization_device,
             )
@@ -399,6 +404,12 @@ class TranscriptionPipeline:
                     )
             except Exception as exc:
                 logger.warning("Could not set min_duration_off: %s", exc)
+        else:
+            logger.info(
+                "Reusing pyannote diarization model (hot reuse, device=%s)",
+                getattr(self, "_diarization_device", None)
+                or getattr(self, "device", ""),
+            )
         return self._diarization
 
     @property
@@ -425,9 +436,14 @@ class TranscriptionPipeline:
             # exactly what we need for per-turn embeddings.
             self._embedding_model = Inference(model, window="whole")
             logger.info(
-                "Loaded WeSpeaker speaker encoder in %.2fs (device=%s)",
+                "Loaded WeSpeaker speaker encoder in %.2fs (cold_load=True, device=%s)",
                 time.perf_counter() - load_started,
                 embedding_device,
+            )
+        else:
+            logger.info(
+                "Reusing WeSpeaker speaker encoder (hot reuse, device=%s)",
+                getattr(self, "_embedding_device", None) or getattr(self, "device", ""),
             )
         return self._embedding_model
 

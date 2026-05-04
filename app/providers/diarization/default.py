@@ -187,7 +187,9 @@ def run_pyannote_diarization(
     if max_speakers:
         kwargs["max_speakers"] = max_speakers
 
-    result = pipeline.diarization(audio_path, **kwargs)
+    diarization_model = pipeline.diarization
+    processing_started = time.perf_counter()
+    result = diarization_model(audio_path, **kwargs)
     turns: list[dict[str, object]] = []
     for turn, _, speaker in result.itertracks(yield_label=True):
         turns.append(
@@ -197,6 +199,15 @@ def run_pyannote_diarization(
                 "speaker": speaker,
             }
         )
+    elapsed_s = time.perf_counter() - processing_started
+    logger.info(
+        "diarization_processing_timing model=pyannote elapsed_s=%.3f device=%s turn_count=%d speaker_count=%d",
+        elapsed_s,
+        getattr(pipeline, "_diarization_device", None)
+        or getattr(pipeline, "device", ""),
+        len(turns),
+        len({turn["speaker"] for turn in turns}),
+    )
     return turns
 
 
@@ -255,6 +266,7 @@ def align_diarized_segments_with_metadata(
             model_source,
             pipeline.device,
         )
+        processing_started = time.perf_counter()
         aligned_result = whisperx.align(
             segments,
             align_model,
@@ -263,7 +275,15 @@ def align_diarized_segments_with_metadata(
             pipeline.device,
             return_char_alignments=False,
         )
+        processing_elapsed_s = time.perf_counter() - processing_started
         segments = aligned_result.get("segments", segments)
+        logger.info(
+            "alignment_processing_timing model=whisperx elapsed_s=%.3f language=%s segment_count=%d device=%s",
+            processing_elapsed_s,
+            language,
+            len(segments),
+            pipeline.device,
+        )
         logger.info("WhisperX forced alignment succeeded for language=%s", language)
         metadata = {
             "status": "succeeded",

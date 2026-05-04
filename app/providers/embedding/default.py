@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
 import torchaudio
@@ -50,8 +51,7 @@ def extract_embeddings_for_turns(
             )
         except Exception as exc:
             logger.warning(
-                "Failed to load segment %s [%d:%d]: %s",
-                speaker,
+                "Failed to load embedding audio segment [%d:%d]: %s",
                 start_sample,
                 end_sample,
                 exc,
@@ -66,18 +66,30 @@ def extract_embeddings_for_turns(
         speaker_segments.setdefault(speaker, []).append(chunk)
 
     embeddings: dict[str, np.ndarray] = {}
+    model_processing_elapsed_s = 0.0
+    processed_chunk_count = 0
     for speaker, chunks in speaker_segments.items():
         emb_list = []
         chunks.sort(key=lambda chunk: chunk.shape[1], reverse=True)
         for chunk in chunks[:10]:
             embedding_model = pipeline.embedding_model
             embedding_device = getattr(pipeline, "embedding_device", pipeline.device)
+            processing_started = time.perf_counter()
             emb = embedding_model(
                 {"waveform": chunk.to(embedding_device), "sample_rate": target_sr}
             )
+            model_processing_elapsed_s += time.perf_counter() - processing_started
+            processed_chunk_count += 1
             emb_list.append(np.asarray(emb))
         if emb_list:
             embeddings[speaker] = np.mean(emb_list, axis=0)
+    logger.info(
+        "embedding_processing_timing model=wespeaker elapsed_s=%.3f device=%s speaker_count=%d chunk_count=%d",
+        model_processing_elapsed_s,
+        getattr(pipeline, "embedding_device", getattr(pipeline, "device", "")),
+        len(embeddings),
+        processed_chunk_count,
+    )
     return embeddings
 
 

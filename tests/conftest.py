@@ -33,6 +33,43 @@ def _make_stub(name: str, **attrs) -> types.ModuleType:
     return mod
 
 
+class _ArrayStub(list):
+    def tolist(self):
+        return list(self)
+
+
+def _make_numpy_stub() -> types.ModuleType:
+    def _asarray(value, *args, **kwargs):
+        if isinstance(value, _ArrayStub):
+            return value
+        if isinstance(value, (list, tuple)):
+            return _ArrayStub(value)
+        return value
+
+    def _mean(values, axis=None):
+        values = list(values)
+        if not values:
+            return _ArrayStub()
+        if axis == 0 and isinstance(values[0], (list, tuple, _ArrayStub)):
+            return _ArrayStub(
+                sum(float(item[index]) for item in values) / len(values)
+                for index in range(len(values[0]))
+            )
+        return sum(float(item) for item in values) / len(values)
+
+    def _save(path, value):
+        with open(path, "wb") as fh:
+            fh.write(repr(value).encode("utf-8"))
+
+    return _make_stub(
+        "numpy",
+        ndarray=object,
+        asarray=_asarray,
+        mean=_mean,
+        save=_save,
+    )
+
+
 def _ensure_stubs():
     # --- torch ---
     if "torch" not in sys.modules:
@@ -44,6 +81,7 @@ def _ensure_stubs():
 
     # --- torchaudio ---
     if "torchaudio" not in sys.modules:
+
         class _FakeInfo:
             """Mimics torchaudio.info() return value."""
 
@@ -70,9 +108,14 @@ def _ensure_stubs():
 
     # --- numpy ---
     if "numpy" not in sys.modules:
-        if importlib.util.find_spec("numpy") is None:
-            _np = _make_stub("numpy")
-            _np.ndarray = object
+        try:
+            if importlib.util.find_spec("numpy") is not None:
+                import numpy as _np  # noqa: F401
+            else:
+                _np = _make_numpy_stub()
+                sys.modules["numpy"] = _np
+        except ImportError:
+            _np = _make_numpy_stub()
             sys.modules["numpy"] = _np
 
     # --- fastapi stubs (only if fastapi itself absent) ---
@@ -395,8 +438,12 @@ def app_client(monkeypatch):
         for _m in list(sys.modules):
             if _m == "voiceprints" or _m.startswith("voiceprints."):
                 del sys.modules[_m]
-            elif _m.startswith("api.") or _m.startswith("application.") or _m.startswith("infra.") or _m.startswith("providers.") or _m in (
-                "api",
+            elif (
+                _m.startswith("api.")
+                or _m.startswith("application.")
+                or _m.startswith("infra.")
+                or _m.startswith("providers.")
+                or _m in ("api",)
             ):
                 del sys.modules[_m]
 

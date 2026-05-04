@@ -6,9 +6,12 @@ import sys
 from types import ModuleType
 
 if "numpy" not in sys.modules:
-    numpy_stub = ModuleType("numpy")
-    numpy_stub.ndarray = object
-    sys.modules["numpy"] = numpy_stub
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        numpy_stub = ModuleType("numpy")
+        numpy_stub.ndarray = object
+        sys.modules["numpy"] = numpy_stub
 
 from pipeline import TranscriptionPipeline
 import pipeline.orchestrator as orchestrator
@@ -120,6 +123,27 @@ def test_whisper_lazy_load_logs_elapsed_time(monkeypatch, caplog):
         _ = pipeline.whisper
 
     assert "Loaded faster-whisper model in 2.25s" in caplog.text
+    assert "cold_load=True" in caplog.text
+
+
+def test_whisper_lazy_load_logs_hot_reuse_without_timing(monkeypatch, caplog):
+    pipeline = _new_pipeline(device="cpu")
+    fake_model = _install_fake_faster_whisper(monkeypatch, [])
+
+    monkeypatch.setattr(orchestrator.Path, "exists", lambda self: False)
+
+    assert pipeline.whisper.__class__ is fake_model
+
+    def fail_if_timed():
+        raise AssertionError("hot reuse must not repeat load timing")
+
+    monkeypatch.setattr(orchestrator.time, "perf_counter", fail_if_timed)
+    caplog.clear()
+
+    with caplog.at_level("INFO", logger=orchestrator.logger.name):
+        assert pipeline.whisper.__class__ is fake_model
+
+    assert "Reusing faster-whisper model (hot reuse, device=cpu)" in caplog.text
 
 
 def test_whisper_lazy_load_keeps_unindexed_cuda_supported(monkeypatch):

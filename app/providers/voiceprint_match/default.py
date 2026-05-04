@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 from pipeline.contracts import (
@@ -10,12 +12,17 @@ from pipeline.contracts import (
     VoiceprintMatchResult,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class DefaultVoiceprintMatchProvider(VoiceprintMatchProvider):
     """Use the current VoiceprintDB identify() API when available."""
 
     def match(self, request: VoiceprintMatchRequest) -> VoiceprintMatchResult:
         if not request.speaker_embeddings:
+            logger.info(
+                "voiceprint_match_processing_timing elapsed_s=0.000 speaker_count=0 applied=False reason=no_embeddings"
+            )
             return VoiceprintMatchResult(
                 speaker_map={},
                 applied=False,
@@ -24,6 +31,10 @@ class DefaultVoiceprintMatchProvider(VoiceprintMatchProvider):
             )
 
         if request.voiceprint_db is None:
+            logger.info(
+                "voiceprint_match_processing_timing elapsed_s=0.000 speaker_count=%d applied=False reason=voiceprint_db_unavailable",
+                len(request.speaker_embeddings),
+            )
             return VoiceprintMatchResult(
                 speaker_map={},
                 applied=False,
@@ -32,6 +43,7 @@ class DefaultVoiceprintMatchProvider(VoiceprintMatchProvider):
             )
 
         speaker_map: dict[str, dict[str, Any]] = {}
+        processing_started = time.perf_counter()
         for speaker_label, embedding in request.speaker_embeddings.items():
             if request.threshold is None:
                 matched_id, matched_name, similarity = request.voiceprint_db.identify(
@@ -48,6 +60,12 @@ class DefaultVoiceprintMatchProvider(VoiceprintMatchProvider):
                 "similarity": round(similarity, 4),
                 "embedding_key": speaker_label,
             }
+        elapsed_s = time.perf_counter() - processing_started
+        logger.info(
+            "voiceprint_match_processing_timing elapsed_s=%.3f speaker_count=%d applied=True reason=matched",
+            elapsed_s,
+            len(speaker_map),
+        )
 
         return VoiceprintMatchResult(
             speaker_map=speaker_map,

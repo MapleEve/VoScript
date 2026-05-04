@@ -1,6 +1,7 @@
 """Application-level transcription job orchestration."""
 
 import logging
+import time
 from pathlib import Path
 
 from config import (
@@ -39,6 +40,7 @@ def run_transcription(
         extra_filename = audio_path.name if status == "converting" else None
         _write_status(job_id, status, filename=extra_filename)
 
+    job_started = time.perf_counter()
     try:
 
         def _process_pipeline():
@@ -69,8 +71,8 @@ def run_transcription(
         jobs[job_id]["result"] = tr
         _write_status(job_id, "completed")
         logger.info(
-            "Job %s completed: %d segments, %d speakers",
-            job_id,
+            "transcription_job_timing status=completed elapsed_s=%.3f segment_count=%d speaker_count=%d",
+            time.perf_counter() - job_started,
             len(tr.get("segments", [])),
             len(tr.get("speaker_map", {})),
         )
@@ -78,7 +80,11 @@ def run_transcription(
             unregister_in_flight(file_hash, job_id)
 
     except Exception as e:
-        logger.exception("Job %s failed", job_id)
+        logger.exception(
+            "transcription_job_timing status=failed elapsed_s=%.3f error_type=%s",
+            time.perf_counter() - job_started,
+            e.__class__.__name__,
+        )
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
         _write_status(job_id, "failed", error=str(e))

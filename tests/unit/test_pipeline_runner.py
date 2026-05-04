@@ -1,4 +1,5 @@
 """Unit tests for stable pipeline stage slots and runner orchestration."""
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,6 +62,38 @@ def test_runner_builds_shared_pipeline_context_type():
     )
 
     assert isinstance(context, PipelineContext)
+
+
+def test_runner_logs_safe_stage_timing(monkeypatch, caplog):
+    pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
+    perf_values = iter([10.0, 10.25])
+
+    def stub_stage(context):
+        context.mark_stage("stub")
+        context.metadata["normalize"] = {
+            "status": "completed",
+            "working_audio_path": "/private/audio.wav",
+            "segment_count": 3,
+        }
+
+    monkeypatch.setattr(
+        "pipeline.runner.time.perf_counter",
+        lambda: next(perf_values),
+    )
+
+    with caplog.at_level("INFO", logger="pipeline.runner"):
+        context = PipelineRunner(
+            stage_order=("normalize",),
+            stage_overrides={"normalize": stub_stage},
+        ).run_context(
+            pipeline,
+            PipelineRequest(audio_path="/private/input.wav"),
+        )
+
+    assert context.metadata["stage_timings"]["normalize"] == 0.25
+    assert "pipeline_stage_timing stage=normalize elapsed_s=0.250" in caplog.text
+    assert "segment_count" in caplog.text
+    assert "/private" not in caplog.text
 
 
 def test_runner_executes_stable_stage_order_and_builds_result(monkeypatch):
@@ -449,7 +482,9 @@ def test_runner_persists_artifacts_and_cleans_generated_audio(tmp_path):
     ]
     assert result["transcription"]["id"] == "tr_demo"
     assert result["transcription"]["asr_hallucination_guard"]["status"] == "filtered"
-    assert result["transcription"]["asr_hallucination_guard"]["removed_duration"] == 128.0
+    assert (
+        result["transcription"]["asr_hallucination_guard"]["removed_duration"] == 128.0
+    )
     assert context.metadata["asr"]["hallucination_guard"]["removed_segment_count"] == 2
     assert result["transcription"]["alignment"] == {
         "status": "skipped",
