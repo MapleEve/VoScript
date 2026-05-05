@@ -4,7 +4,11 @@
 
 ## Unreleased
 
-_暂无未发布变更。_
+### 可观测性
+
+- 新增安全的模型加载与转写阶段耗时日志，覆盖 ASR、diarization、embedding、
+  voiceprint match、enhancement 与 pipeline stage timing。日志只记录阶段、模型、
+  耗时和聚合指标，不记录文件名、路径、job ID、speaker ID、host 或 token。
 
 ## 0.7.5 — GPU 模型空闲卸载与 CI 质量门禁 (2026-04-29)
 

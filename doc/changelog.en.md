@@ -4,7 +4,12 @@
 
 ## Unreleased
 
-_No unreleased changes._
+### Observability
+
+- Added safe model-load and transcription-stage timing logs for ASR,
+  diarization, embedding, voiceprint match, enhancement, and pipeline stage
+  timing. Logs record only stage, model, elapsed time, and aggregate metrics;
+  they do not include filenames, paths, job IDs, speaker IDs, hosts, or tokens.
 
 ## 0.7.5 — Idle GPU model unload and CI quality gates (2026-04-29)
 
