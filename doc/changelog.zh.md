@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+### 安全
+
+- 更新依赖安全基线与 FOSSA policy test 覆盖，收紧公开依赖扫描流程。
+
 ### 可观测性
 
 - 新增安全的模型加载与转写阶段耗时日志，覆盖 ASR、diarization、embedding、

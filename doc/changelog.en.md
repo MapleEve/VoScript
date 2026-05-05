@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+### Security
+
+- Updated the dependency security baseline and FOSSA policy test coverage to
+  tighten the public dependency scanning flow.
+
 ### Observability
 
 - Added safe model-load and transcription-stage timing logs for ASR,
