@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import tempfile
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -336,10 +337,22 @@ class TranscriptionPipeline:
                 whisper_device,
                 compute_type,
             )
+            load_started = time.perf_counter()
             self._whisper = WhisperModel(
                 model_ref,
                 **_faster_whisper_device_kwargs(whisper_device),
                 compute_type=compute_type,
+            )
+            logger.info(
+                "Loaded faster-whisper model in %.2fs (cold_load=True, device=%s, compute_type=%s)",
+                time.perf_counter() - load_started,
+                whisper_device,
+                compute_type,
+            )
+        else:
+            logger.info(
+                "Reusing faster-whisper model (hot reuse, device=%s)",
+                getattr(self, "_whisper_device", None) or getattr(self, "device", ""),
             )
         return self._whisper
 
@@ -363,6 +376,7 @@ class TranscriptionPipeline:
                     token=self.hf_token,
                 )
             logger.info("Loading pyannote diarization model")
+            load_started = time.perf_counter()
             self._diarization = _load_trusted_pyannote_model(
                 PyannotePipeline.from_pretrained,
                 model_ref,
@@ -371,6 +385,11 @@ class TranscriptionPipeline:
             _dev = diarization_device if ":" in diarization_device else "cuda:0"
             if diarization_device.startswith("cuda"):
                 self._diarization.to(torch.device(_dev))
+            logger.info(
+                "Loaded pyannote diarization model in %.2fs (cold_load=True, device=%s)",
+                time.perf_counter() - load_started,
+                diarization_device,
+            )
             # Suppress over-segmentation of short backchannel turns
             try:
                 if hasattr(self._diarization, "_binarize") and hasattr(
@@ -385,6 +404,12 @@ class TranscriptionPipeline:
                     )
             except Exception as exc:
                 logger.warning("Could not set min_duration_off: %s", exc)
+        else:
+            logger.info(
+                "Reusing pyannote diarization model (hot reuse, device=%s)",
+                getattr(self, "_diarization_device", None)
+                or getattr(self, "device", ""),
+            )
         return self._diarization
 
     @property
@@ -400,6 +425,7 @@ class TranscriptionPipeline:
             )
             model_ref = _resolve_local_pyannote_file(model_ref, "pytorch_model.bin")
             logger.info("Loading WeSpeaker speaker encoder")
+            load_started = time.perf_counter()
             model = _load_trusted_pyannote_model(
                 Model.from_pretrained,
                 model_ref,
@@ -409,6 +435,16 @@ class TranscriptionPipeline:
             # window="whole" returns one embedding vector per full chunk —
             # exactly what we need for per-turn embeddings.
             self._embedding_model = Inference(model, window="whole")
+            logger.info(
+                "Loaded WeSpeaker speaker encoder in %.2fs (cold_load=True, device=%s)",
+                time.perf_counter() - load_started,
+                embedding_device,
+            )
+        else:
+            logger.info(
+                "Reusing WeSpeaker speaker encoder (hot reuse, device=%s)",
+                getattr(self, "_embedding_device", None) or getattr(self, "device", ""),
+            )
         return self._embedding_model
 
     def transcribe(

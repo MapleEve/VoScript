@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import Counter
 from typing import Any
 
@@ -191,7 +192,9 @@ def run_faster_whisper_asr(
     if no_repeat_ngram_size and no_repeat_ngram_size >= 3:
         whisper_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
 
-    segments_iter, info = pipeline.whisper.transcribe(audio_path, **whisper_kwargs)
+    whisper_model = pipeline.whisper
+    processing_started = time.perf_counter()
+    segments_iter, info = whisper_model.transcribe(audio_path, **whisper_kwargs)
     raw_segments = [
         {
             "start": round(float(segment.start), 3),
@@ -200,8 +203,18 @@ def run_faster_whisper_asr(
         }
         for segment in segments_iter
     ]
+    processing_elapsed_s = time.perf_counter() - processing_started
     segments, hallucination_guard = suppress_repetition_hallucinations(raw_segments)
     detected_language = info.language
+    audio_duration_s = max((segment["end"] for segment in raw_segments), default=0.0)
+    logger.info(
+        "asr_processing_timing model=faster-whisper elapsed_s=%.3f language=%s segment_count=%d raw_segment_count=%d duration_s=%.3f",
+        processing_elapsed_s,
+        detected_language,
+        len(segments),
+        len(raw_segments),
+        audio_duration_s,
+    )
     logger.info(
         "Transcription done: %d segments, language=%s, repetition_guard=%s",
         len(segments),
