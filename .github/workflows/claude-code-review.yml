@@ -52,6 +52,5 @@ jobs:
             synchronized English/Chinese documentation. Avoid formatting-only comments.
           claude_args: |
             --model ${{ env.CLAUDE_MODEL }}
-            --max-turns 5
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
