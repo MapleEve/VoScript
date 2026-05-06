@@ -7,6 +7,10 @@
 ### 安全
 
 - 更新依赖安全基线与 FOSSA policy test 覆盖，收紧公开依赖扫描流程。
+- 将 WhisperX alignment 从 PyPI yanked 的 `3.1.x` 系列迁移到
+  `whisperx==3.3.1`，并配套固定 `pyannote.audio==3.3.2` 与
+  `faster-whisper==1.1.0`，同时收紧 `pyannote.*` 与 `pandas` 传递依赖边界，
+  保持当前 `numpy<2` / SciPy 1.11.x 依赖基线。
 
 ### 可观测性
 
