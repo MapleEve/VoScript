@@ -10,9 +10,10 @@
   tighten the public dependency scanning flow.
 - Moved WhisperX alignment from the yanked `3.1.x` package series to
   `whisperx==3.3.1`, with compatible `pyannote.audio==3.3.2` and
-  `faster-whisper==1.1.0` pins, plus bounded `pyannote.*` and `pandas`
-  transitive dependencies, while keeping the current `numpy<2` / SciPy 1.11.x
-  dependency baseline.
+  cuDNN9-compatible `faster-whisper>=1.2.1,<2.0.0` /
+  `ctranslate2>=4.7.1,<5.0`, plus bounded `pyannote.*` and `pandas`
+  transitive dependencies. This keeps the current `numpy<2` / SciPy 1.11.x
+  dependency baseline while avoiding runtime lookups for cuDNN8 libraries.
 
 ### Observability
 
@@ -20,6 +21,10 @@
   diarization, embedding, voiceprint match, enhancement, and pipeline stage
   timing. Logs record only stage, model, elapsed time, and aggregate metrics;
   they do not include filenames, paths, job IDs, speaker IDs, hosts, or tokens.
+- Transcription jobs no longer run full Python GC before/after every GPU job;
+  active job boundaries only clear the CUDA cache, while full GC remains on the
+  idle-unload path. This avoids long GIL holds that can make `/healthz` time out
+  after large alignment results complete.
 
 ## 0.7.5 — Idle GPU model unload and CI quality gates (2026-04-29)
 

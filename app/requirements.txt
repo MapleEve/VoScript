@@ -12,7 +12,11 @@ pyannote.metrics>=3.2,<4.0
 pyannote.pipeline>=3.0.1,<4.0
 omegaconf==2.3.0
 antlr4-python3-runtime==4.9.3
-faster-whisper==1.1.0
+# faster-whisper 1.1.0 resolves to a CTranslate2 wheel that looks for cuDNN 8
+# (`libcudnn_ops_infer.so.8`). The Docker base is CUDA 12.4 + cuDNN 9, so keep
+# the ASR runtime on the cuDNN9-compatible CTranslate2 line verified remotely.
+faster-whisper>=1.2.1,<2.0.0
+ctranslate2>=4.7.1,<5.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.26,<0.0.28

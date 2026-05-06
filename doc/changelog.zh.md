@@ -9,14 +9,18 @@
 - 更新依赖安全基线与 FOSSA policy test 覆盖，收紧公开依赖扫描流程。
 - 将 WhisperX alignment 从 PyPI yanked 的 `3.1.x` 系列迁移到
   `whisperx==3.3.1`，并配套固定 `pyannote.audio==3.3.2` 与
-  `faster-whisper==1.1.0`，同时收紧 `pyannote.*` 与 `pandas` 传递依赖边界，
-  保持当前 `numpy<2` / SciPy 1.11.x 依赖基线。
+  cuDNN9 兼容的 `faster-whisper>=1.2.1,<2.0.0` /
+  `ctranslate2>=4.7.1,<5.0`，同时收紧 `pyannote.*` 与 `pandas` 传递依赖边界，
+  保持当前 `numpy<2` / SciPy 1.11.x 依赖基线，避免运行时查找 cuDNN8 动态库。
 
 ### 可观测性
 
 - 新增安全的模型加载与转写阶段耗时日志，覆盖 ASR、diarization、embedding、
   voiceprint match、enhancement 与 pipeline stage timing。日志只记录阶段、模型、
   耗时和聚合指标，不记录文件名、路径、job ID、speaker ID、host 或 token。
+- 转写 job 前后不再执行完整 Python GC，只清理 CUDA cache；完整 GC 保留在
+  idle-unload 阶段，避免大段 alignment 结果完成后长时间持有 GIL 导致 `/healthz`
+  超时。
 
 ## 0.7.5 — GPU 模型空闲卸载与 CI 质量门禁 (2026-04-29)
 
