@@ -12,8 +12,9 @@
   `whisperx==3.3.1`, with compatible `pyannote.audio==3.3.2` and
   cuDNN9-compatible `faster-whisper>=1.2.1,<2.0.0` /
   `ctranslate2>=4.7.1,<5.0`, plus bounded `pyannote.*` and `pandas`
-  transitive dependencies. This keeps the current `numpy<2` / SciPy 1.11.x
-  dependency baseline while avoiding runtime lookups for cuDNN8 libraries.
+  transitive dependencies. Docker installs WhisperX with `--no-deps` so its old
+  ASR transitive dependencies cannot replace the current `numpy<2` /
+  SciPy 1.11.x / cuDNN9 runtime baseline or trigger cuDNN8 library lookups.
 
 ### Observability
 

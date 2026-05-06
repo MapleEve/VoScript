@@ -45,6 +45,11 @@ RUN if [ -n "$PIP_INDEX_URL" ]; then \
     else \
         pip install --no-cache-dir -r requirements.txt; \
     fi
+RUN if [ -n "$PIP_INDEX_URL" ]; then \
+        pip install --no-cache-dir -i "$PIP_INDEX_URL" --no-deps whisperx==3.3.1; \
+    else \
+        pip install --no-cache-dir --no-deps whisperx==3.3.1; \
+    fi
 
 COPY --chown=app:app . .
 

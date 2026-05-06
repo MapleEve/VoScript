@@ -10,8 +10,9 @@
 - 将 WhisperX alignment 从 PyPI yanked 的 `3.1.x` 系列迁移到
   `whisperx==3.3.1`，并配套固定 `pyannote.audio==3.3.2` 与
   cuDNN9 兼容的 `faster-whisper>=1.2.1,<2.0.0` /
-  `ctranslate2>=4.7.1,<5.0`，同时收紧 `pyannote.*` 与 `pandas` 传递依赖边界，
-  保持当前 `numpy<2` / SciPy 1.11.x 依赖基线，避免运行时查找 cuDNN8 动态库。
+  `ctranslate2>=4.7.1,<5.0`，同时收紧 `pyannote.*` 与 `pandas` 传递依赖边界。
+  Docker 会以 `--no-deps` 安装 WhisperX，避免其旧 ASR 传递依赖覆盖当前
+  `numpy<2` / SciPy 1.11.x / cuDNN9 运行时基线并在运行时查找 cuDNN8 动态库。
 
 ### 可观测性
 

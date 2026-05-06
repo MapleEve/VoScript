@@ -38,10 +38,10 @@ scipy>=1.11.4,<1.12.0
 # sqlite-vec: fast on-disk top-k cosine search for voiceprints.
 sqlite-vec>=0.1.0
 # whisperx: forced word-level alignment via wav2vec2.
-# 3.3.1 is the newest non-yanked WhisperX release that still supports the
-# current torch 2.6 / numpy<2 / SciPy 1.11.x runtime without moving to the
-# WhisperX 3.3.3+ numpy>=2 or 3.8.x torch~=2.8 dependency stack.
-whisperx==3.3.1
+# Docker installs whisperx==3.3.1 with --no-deps after this file is resolved.
+# WhisperX 3.3.1 still hard-pins faster-whisper==1.1.0 / ctranslate2<4.5.0,
+# which would replace the cuDNN9-compatible ASR stack above and look for
+# cuDNN8 runtime libraries in the CUDA 12.4 + cuDNN9 base image.
 transformers>=5.0.0,<5.1.0
 # Voice enhancement / noise reduction (optional — loaded only when DENOISE_MODEL != "none")
 deepfilternet>=0.5.6
