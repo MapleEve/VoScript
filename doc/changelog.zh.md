@@ -23,6 +23,9 @@
 - 转写 job 前后不再执行完整 Python GC，只清理 CUDA cache；完整 GC 保留在
   idle-unload 阶段，避免大段 alignment 结果完成后长时间持有 GIL 导致 `/healthz`
   超时。
+- ASR hallucination guard 新增短单段 stock outro 过滤，拦截
+  “点赞 / 订阅 / 转发 / 打赏”等多个短视频尾巴标记高度集中的非重复幻觉，同时保留
+  长会议中的正常上下文词。
 
 ## 0.7.5 — GPU 模型空闲卸载与 CI 质量门禁 (2026-04-29)
 

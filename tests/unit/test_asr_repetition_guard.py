@@ -49,6 +49,37 @@ def test_suppresses_long_repeated_non_prompt_segment():
     assert report["removed_duration"] == 20.0
 
 
+def test_suppresses_single_segment_stock_outro_hallucination():
+    segments = [
+        {
+            "start": 0.438,
+            "end": 18.091,
+            "text": "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+        }
+    ]
+
+    filtered, report = suppress_repetition_hallucinations(segments)
+
+    assert filtered == []
+    assert report["removed_segment_count"] == 1
+    assert report["removed_duration"] == 17.653
+
+
+def test_keeps_contextual_subscribe_word_in_normal_segment():
+    segments = [
+        {
+            "start": 0.0,
+            "end": 8.0,
+            "text": "这个功能里订阅提醒只是用户消息设置的一部分，后面还有支付通知。",
+        }
+    ]
+
+    filtered, report = suppress_repetition_hallucinations(segments)
+
+    assert filtered == segments
+    assert report["removed_segment_count"] == 0
+
+
 def test_keeps_normal_short_repetition_below_hallucination_thresholds():
     segments = [
         {"start": 0.0, "end": 1.0, "text": "对"},
