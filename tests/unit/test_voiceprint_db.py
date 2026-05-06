@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 _APP_DIR = Path(__file__).resolve().parents[2] / "app"
 
@@ -221,6 +222,120 @@ def test_manual_rebuild_can_replace_existing_cohort_with_available_sources(tmp_p
     assert rebuilt_size == 1
     assert db.cohort_size == 1
     assert np.load(cohort_path, allow_pickle=False).shape == (1, 256)
+
+
+def test_legacy_npy_voiceprint_store_migrates_to_sqlite(tmp_path):
+    """A pre-SQLite voiceprint store must migrate avg and sample embeddings once."""
+    db_dir = tmp_path / "voiceprints"
+    db_dir.mkdir(parents=True)
+    speaker_id = "spk_legacy"
+    avg = _unit_vec(7000)
+    samples = np.stack([avg, _unit_vec(7001)]).astype(np.float32)
+
+    (db_dir / "index.json").write_text(
+        json.dumps(
+            {
+                "speakers": {
+                    speaker_id: {
+                        "name": "Legacy",
+                        "sample_count": 2,
+                        "created_at": "2026-04-01T00:00:00",
+                        "updated_at": "2026-04-02T00:00:00",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    np.save(db_dir / f"{speaker_id}_avg.npy", avg)
+    np.save(db_dir / f"{speaker_id}_samples.npy", samples)
+
+    db, _mod = _fresh_db(db_dir)
+
+    assert db.list_speakers() == [
+        {
+            "id": speaker_id,
+            "name": "Legacy",
+            "sample_count": 2,
+            "sample_spread": None,
+            "created_at": "2026-04-01T00:00:00",
+            "updated_at": "2026-04-02T00:00:00",
+        }
+    ]
+    migrated_samples = db._conn.execute(
+        "SELECT COUNT(*) FROM speaker_samples WHERE speaker_id = ?",
+        (speaker_id,),
+    ).fetchone()[0]
+    assert migrated_samples == 2
+    assert (db_dir / "index.json.migrated.bak").exists()
+
+
+def test_legacy_voiceprint_migration_skips_unreadable_index(tmp_path):
+    db_dir = tmp_path / "voiceprints"
+    db_dir.mkdir(parents=True)
+    (db_dir / "index.json").write_text("{not-json", encoding="utf-8")
+
+    db, _mod = _fresh_db(db_dir)
+
+    assert db.list_speakers() == []
+    assert (db_dir / "index.json").exists()
+
+
+def test_legacy_voiceprint_migration_ignores_missing_avg_and_existing_db(tmp_path):
+    db_dir = tmp_path / "voiceprints"
+    db_dir.mkdir(parents=True)
+    (db_dir / "index.json").write_text(
+        json.dumps({"speakers": {"spk_missing": {"name": "Missing"}}}),
+        encoding="utf-8",
+    )
+
+    db, _mod = _fresh_db(db_dir)
+    assert db.list_speakers() == []
+    assert (db_dir / "index.json.migrated.bak").exists()
+
+    sid = db.add_speaker("Existing", _unit_vec(7100))
+    (db_dir / "index.json").write_text(
+        json.dumps({"speakers": {"spk_other": {"name": "Other"}}}),
+        encoding="utf-8",
+    )
+
+    db._storage._maybe_migrate_legacy()
+
+    assert [speaker["id"] for speaker in db.list_speakers()] == [sid]
+    assert (db_dir / "index.json").exists()
+
+
+def test_repository_crud_and_private_scan_edges(tmp_path):
+    db, _mod = _fresh_db(tmp_path / "voiceprints")
+    sid = db.add_speaker("Maple", _unit_vec(7200))
+
+    db.rename_speaker(sid, "Maple Renamed")
+    assert db.get_speaker(sid)["name"] == "Maple Renamed"
+    assert db.get_speaker("spk_missing") is None
+
+    repo = db._repository
+    assert repo._find_best_match(_unit_vec(7200))[0] == sid
+    assert repo._python_cosine_scan(np.zeros(256, dtype=np.float32)) == []
+
+    with pytest.raises(ValueError, match="No samples"):
+        repo._recompute_avg_and_spread("spk_no_samples")
+
+    db.delete_speaker(sid)
+    assert db.get_speaker(sid) is None
+    with pytest.raises(ValueError, match="not found"):
+        db.delete_speaker(sid)
+
+
+def test_recompute_spread_handles_zero_average(tmp_path):
+    db, _mod = _fresh_db(tmp_path / "voiceprints")
+    zero = np.zeros(256, dtype=np.float32)
+    sid = db.add_speaker("Zero", zero)
+
+    db.update_speaker(sid, zero)
+
+    row = db.get_speaker(sid)
+    assert row["sample_count"] == 2
+    assert row["sample_spread"] is None
 
 
 def test_lifespan_loads_saved_cohort_without_rebuild(tmp_path, monkeypatch):
