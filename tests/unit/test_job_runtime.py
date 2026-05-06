@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 import infra.job_runtime as job_runtime
@@ -75,6 +78,48 @@ def test_run_serialized_gpu_work_releases_semaphore_after_error(monkeypatch):
 
     assert result == "ok"
     assert events == ["pre-whisper", "pre-whisper", "retry", "post-pipeline"]
+
+
+def test_flush_torch_cuda_cache_skips_python_gc_for_active_job_phases(monkeypatch):
+    events = []
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: events.append("empty_cache"),
+        )
+    )
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        job_runtime,
+        "_collect_python_gc",
+        lambda: events.append("gc_collect"),
+    )
+
+    job_runtime.flush_torch_cuda_cache(phase="post-pipeline")
+
+    assert events == ["empty_cache"]
+
+
+def test_flush_torch_cuda_cache_keeps_full_gc_for_idle_unload(monkeypatch):
+    events = []
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: events.append("empty_cache"),
+        )
+    )
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        job_runtime,
+        "_collect_python_gc",
+        lambda: events.append("gc_collect"),
+    )
+
+    job_runtime.flush_torch_cuda_cache(phase="idle-unload")
+
+    assert events == ["gc_collect", "empty_cache"]
 
 
 def test_idle_unload_daemon_disabled_when_timeout_zero():
