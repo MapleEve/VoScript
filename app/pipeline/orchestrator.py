@@ -266,6 +266,10 @@ class TranscriptionPipeline:
         self._whisper_device = None
         self._diarization_device = None
         self._embedding_device = None
+        self._alignment_cache_key = None
+        self._alignment_device = None
+        self._alignment_model = None
+        self._alignment_metadata = None
         self.model_size = model_size or WHISPER_MODEL
         self.hf_token = hf_token or HF_TOKEN
         self._whisper = None
@@ -284,16 +288,25 @@ class TranscriptionPipeline:
     def has_loaded_models(self) -> bool:
         return any(
             getattr(self, name, None) is not None
-            for name in ("_whisper", "_diarization", "_embedding_model")
+            for name in (
+                "_whisper",
+                "_diarization",
+                "_embedding_model",
+                "_alignment_model",
+            )
         )
 
     def unload_models(self) -> None:
         self._whisper = None
         self._diarization = None
         self._embedding_model = None
+        self._alignment_model = None
+        self._alignment_metadata = None
+        self._alignment_cache_key = None
         self._whisper_device = None
         self._diarization_device = None
         self._embedding_device = None
+        self._alignment_device = None
 
     def _select_device_for_lazy_load(self, device_attr: str) -> str:
         selected_device = getattr(self, device_attr, None)

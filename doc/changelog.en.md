@@ -27,6 +27,11 @@
   active job boundaries only clear the CUDA cache, while full GC remains on the
   idle-unload path. This avoids long GIL holds that can make `/healthz` time out
   after large alignment results complete.
+- WhisperX forced-alignment models are now cached by language / model / device
+  and default to `WHISPERX_ALIGN_DEVICE=cpu`, isolating alignment from GPU ASR,
+  diarization, and embedding runtimes. Operators can explicitly set
+  `pipeline`, `asr`, `cuda`, or `cuda:0` after validating CUDA alignment
+  stability.
 - The ASR hallucination guard now filters short single-segment stock outros
   dominated by markers such as "like / subscribe / repost / tip", while keeping
   normal contextual words in longer meeting transcripts.

@@ -24,6 +24,10 @@ def _new_pipeline(*, device="cuda"):
     pipeline._whisper_device = None
     pipeline._diarization_device = None
     pipeline._embedding_device = None
+    pipeline._alignment_cache_key = None
+    pipeline._alignment_device = None
+    pipeline._alignment_model = None
+    pipeline._alignment_metadata = None
     pipeline.model_size = "tiny"
     pipeline.hf_token = None
     pipeline._whisper = None
@@ -49,6 +53,9 @@ def test_unload_models_drops_loaded_references_without_selecting_device(monkeypa
     pipeline._whisper = object()
     pipeline._diarization = object()
     pipeline._embedding_model = object()
+    pipeline._alignment_model = object()
+    pipeline._alignment_metadata = object()
+    pipeline._alignment_cache_key = ("zh", None, "default", None, False, "cpu")
     calls = []
 
     monkeypatch.setattr(
@@ -65,6 +72,9 @@ def test_unload_models_drops_loaded_references_without_selecting_device(monkeypa
     assert pipeline._whisper is None
     assert pipeline._diarization is None
     assert pipeline._embedding_model is None
+    assert pipeline._alignment_model is None
+    assert pipeline._alignment_metadata is None
+    assert pipeline._alignment_cache_key is None
     assert calls == []
 
 
@@ -333,6 +343,7 @@ def test_unload_models_clears_per_model_devices_and_reload_reselects(monkeypatch
     assert pipeline._whisper_device is None
     assert pipeline._diarization_device is None
     assert pipeline._embedding_device is None
+    assert pipeline._alignment_device is None
 
     _ = pipeline.whisper
     assert pipeline._whisper_device == "cuda:1"

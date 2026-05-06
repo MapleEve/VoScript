@@ -120,6 +120,7 @@ use `deepfilternet`; `noisereduce` runs whenever it is selected.
 | API `min_speakers` / `max_speakers` | `0` | Per-request speaker-count bounds. `0` means auto and is not passed to pyannote. |
 | `PYANNOTE_MIN_DURATION_OFF` | `0.5` | pyannote `_binarize.min_duration_off`, used to merge short pauses and reduce over-segmentation. If the pyannote object does not support it, the service logs a warning and continues. |
 | `WHISPERX_ALIGN_DISABLED_LANGUAGES` | empty | Comma-separated languages that skip forced alignment when no model override is present. Use only as a temporary operational fallback. |
+| `WHISPERX_ALIGN_DEVICE` | `cpu` | Runtime device for WhisperX forced alignment. CPU is the default to isolate wav2vec2 alignment from GPU ASR / speaker-embedding runtimes; set to `pipeline` / `asr` / `cuda` / `cuda:0` only after validating CUDA alignment stability. |
 | `WHISPERX_ALIGN_MODEL_MAP` | empty | Comma-separated `lang=model` overrides, for example `zh=org/model`. |
 | `WHISPERX_ALIGN_MODEL_DIR` | empty | Optional alignment model directory; passed through only when the installed WhisperX supports that parameter. |
 | `WHISPERX_ALIGN_CACHE_ONLY` | `0` | When `1`, requests cache-only alignment model loading, only when supported by the installed WhisperX. |

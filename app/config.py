@@ -96,6 +96,7 @@ MODEL_IDLE_TIMEOUT_SEC: float = _env_float("MODEL_IDLE_TIMEOUT_SEC", 180.0)
 
 # WhisperX forced-alignment controls. Languages are attempted by default; use
 # WHISPERX_ALIGN_DISABLED_LANGUAGES only for an explicit operational fallback.
+WHISPERX_ALIGN_DEVICE: str = _env_str("WHISPERX_ALIGN_DEVICE", "cpu").lower()
 WHISPERX_ALIGN_DISABLED_LANGUAGES: frozenset[str] = _env_csv_set(
     "WHISPERX_ALIGN_DISABLED_LANGUAGES",
     "",

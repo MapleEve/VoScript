@@ -23,6 +23,9 @@
 - 转写 job 前后不再执行完整 Python GC，只清理 CUDA cache；完整 GC 保留在
   idle-unload 阶段，避免大段 alignment 结果完成后长时间持有 GIL 导致 `/healthz`
   超时。
+- WhisperX forced alignment 模型现在按语言 / 模型 / 设备缓存复用，并默认通过
+  `WHISPERX_ALIGN_DEVICE=cpu` 与 GPU ASR、diarization、embedding 运行时隔离；
+  需要 CUDA alignment 时可显式设为 `pipeline`、`asr`、`cuda` 或 `cuda:0`。
 - ASR hallucination guard 新增短单段 stock outro 过滤，拦截
   “点赞 / 订阅 / 转发 / 打赏”等多个短视频尾巴标记高度集中的非重复幻觉，同时保留
   长会议中的正常上下文词。
