@@ -10,6 +10,7 @@ from inspect import signature
 from pathlib import Path
 from types import ModuleType
 
+import numpy as np
 import pytest
 import infra.audio.hash_index as hash_index_module
 import infra.audio as audio_infra
@@ -121,6 +122,101 @@ def test_unknown_denoise_model_is_a_noop(tmp_path, caplog):
     assert result.output_path == wav_path
     assert result.model == "unsupported"
     assert "Unknown DENOISE_MODEL='unsupported'" in caplog.text
+
+
+def test_estimate_snr_uses_energy_heuristic(monkeypatch, tmp_path):
+    class FakeTensor:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        @property
+        def shape(self):
+            return self.values.shape
+
+        def __len__(self):
+            return len(self.values)
+
+        def __getitem__(self, item):
+            return FakeTensor(self.values[item])
+
+        def mean(self, dim=None, keepdim=False):
+            return FakeTensor(np.mean(self.values, axis=dim, keepdims=keepdim))
+
+        def squeeze(self, dim):
+            return FakeTensor(np.squeeze(self.values, axis=dim))
+
+        def reshape(self, *shape):
+            return FakeTensor(self.values.reshape(*shape))
+
+        def pow(self, power):
+            return FakeTensor(np.power(self.values, power))
+
+        def sqrt(self):
+            return FakeTensor(np.sqrt(self.values))
+
+        def sort(self):
+            return FakeTensor(np.sort(self.values)), None
+
+        def item(self):
+            return float(np.asarray(self.values).item())
+
+    quiet = np.full(60, 0.1, dtype=np.float32)
+    speech = np.ones(240, dtype=np.float32)
+    mono = np.concatenate([quiet, speech])
+    stereo = np.stack([mono, mono])
+    torchaudio_module = ModuleType("torchaudio")
+    torchaudio_module.load = lambda path: (FakeTensor(stereo), 1000)
+    monkeypatch.setitem(sys.modules, "torchaudio", torchaudio_module)
+
+    assert enhance_default._estimate_snr(tmp_path / "sample.wav") == pytest.approx(20.0)
+
+
+def test_estimate_snr_returns_inf_for_too_short_or_silent_noise(monkeypatch, tmp_path):
+    class FakeTensor:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        @property
+        def shape(self):
+            return self.values.shape
+
+        def __len__(self):
+            return len(self.values)
+
+        def __getitem__(self, item):
+            return FakeTensor(self.values[item])
+
+        def squeeze(self, dim):
+            return FakeTensor(np.squeeze(self.values, axis=dim))
+
+        def reshape(self, *shape):
+            return FakeTensor(self.values.reshape(*shape))
+
+        def pow(self, power):
+            return FakeTensor(np.power(self.values, power))
+
+        def mean(self, dim=None, keepdim=False):
+            return FakeTensor(np.mean(self.values, axis=dim, keepdims=keepdim))
+
+        def sqrt(self):
+            return FakeTensor(np.sqrt(self.values))
+
+        def sort(self):
+            return FakeTensor(np.sort(self.values)), None
+
+        def item(self):
+            return float(np.asarray(self.values).item())
+
+    torchaudio_module = ModuleType("torchaudio")
+    samples = [
+        FakeTensor(np.zeros((1, 60))),
+        FakeTensor(np.concatenate([np.zeros(60), np.ones(240)]).reshape(1, 300)),
+    ]
+    torchaudio_module.load = lambda path: (samples.pop(0), 1000)
+    monkeypatch.setitem(sys.modules, "torchaudio", torchaudio_module)
+
+    assert enhance_default._estimate_snr(tmp_path / "short.wav") == float("inf")
+    assert enhance_default._estimate_snr(tmp_path / "silent-noise.wav") == float("inf")
 
 
 def test_deepfilternet_lazy_load_logs_elapsed_time(monkeypatch, caplog):

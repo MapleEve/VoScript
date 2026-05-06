@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import wave
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -336,6 +337,90 @@ def test_recompute_spread_handles_zero_average(tmp_path):
     row = db.get_speaker(sid)
     assert row["sample_count"] == 2
     assert row["sample_spread"] is None
+
+
+def test_cohort_helpers_handle_paths_invalid_files_and_collectors(tmp_path):
+    _fresh_voiceprint_module()
+    cohort_mod = importlib.import_module("voiceprints.cohort")
+
+    class DummyDB:
+        _asnorm = None
+        _cohort_generation = 3
+        _cohort_built_gen = 0
+        _lock = threading.RLock()
+
+    manager = cohort_mod.VoiceprintCohortManager(
+        DummyDB(),
+        cohort_path=tmp_path / "configured.npy",
+        embedding_dim=3,
+    )
+
+    assert manager.cohort_path == tmp_path / "configured.npy"
+    assert manager.cohort_size == 0
+    assert manager.resolve_path(save_path=tmp_path / "explicit.npy") == (
+        tmp_path / "explicit.npy"
+    )
+    assert manager.resolve_path(transcriptions_dir=tmp_path) == (
+        tmp_path / "configured.npy"
+    )
+    no_default = cohort_mod.VoiceprintCohortManager(DummyDB(), None, embedding_dim=3)
+    assert no_default.resolve_path(transcriptions_dir=tmp_path) == (
+        tmp_path / "asnorm_cohort.npy"
+    )
+    assert no_default.resolve_path() is None
+
+    invalid_ndim = tmp_path / "invalid.npy"
+    np.save(invalid_ndim, np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    with pytest.raises(ValueError, match="Cohort must be 2D"):
+        manager.load(str(invalid_ndim))
+    assert manager._persisted_cohort_size(invalid_ndim) == 0
+
+    corrupt = tmp_path / "corrupt.npy"
+    corrupt.write_bytes(b"not-numpy")
+    assert manager._persisted_cohort_size(corrupt) == 0
+    assert manager._persisted_cohort_size(None) == 0
+
+    assert manager._should_keep_existing_cohort(source_size=1, current_size=0) is False
+    assert manager._should_keep_existing_cohort(source_size=1, current_size=2) is True
+    assert (
+        manager._should_keep_existing_cohort(
+            source_size=1,
+            current_size=cohort_mod.ASNORM_MIN_COHORT_SIZE,
+        )
+        is True
+    )
+
+    collected = []
+    encoded = base64.b64encode(np.array([1, 2, 3], dtype=np.float32).tobytes()).decode()
+    added = manager._collect_json_embeddings(
+        payload={
+            "speaker_embeddings": {
+                "list": [1, 2, 3],
+                "encoded": encoded,
+                "wrong_shape": [1, 2],
+                "ignored": {"bad": True},
+            }
+        },
+        expected_shape=(3,),
+        collected=collected,
+    )
+    assert added == 2
+    assert len(collected) == 2
+
+    result_path = tmp_path / "tr_collect" / "result.json"
+    result_path.parent.mkdir()
+    np.save(result_path.parent / "emb_good.npy", np.array([4, 5, 6], dtype=np.float32))
+    np.save(result_path.parent / "emb_wrong.npy", np.array([1, 2], dtype=np.float32))
+    (result_path.parent / "emb_bad.npy").write_bytes(b"bad")
+
+    skipped = manager._collect_npy_embeddings(
+        result_path=result_path,
+        expected_shape=(3,),
+        collected=collected,
+    )
+
+    assert skipped == 1
+    assert len(collected) == 3
 
 
 def test_lifespan_loads_saved_cohort_without_rebuild(tmp_path, monkeypatch):
