@@ -14,7 +14,8 @@
   `ctranslate2>=4.7.1,<5.0`, plus bounded `pyannote.*` and `pandas`
   transitive dependencies. Docker installs WhisperX with `--no-deps` so its old
   ASR transitive dependencies cannot replace the current `numpy<2` /
-  SciPy 1.11.x / cuDNN9 runtime baseline or trigger cuDNN8 library lookups.
+  SciPy 1.11.x / cuDNN9 runtime baseline or trigger cuDNN8 library lookups;
+  the `nltk` package needed by alignment is installed explicitly.
 
 ### Observability
 
