@@ -36,6 +36,10 @@
   dominated by markers such as "like / subscribe / repost / tip", including raw
   ASR segments that are slightly over 30 seconds, while keeping normal
   contextual words in longer meeting transcripts.
+- The embedding stage now reads the normalized WAV once and slices it by
+  diarization turns, avoiding repeated torchaudio native decoding for every
+  turn. It falls back to the previous segmented loader on read failure and adds
+  aggregate `embedding_audio_load_timing` logs.
 
 ## 0.7.5 — Idle GPU model unload and CI quality gates (2026-04-29)
 

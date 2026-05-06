@@ -29,6 +29,9 @@
 - ASR hallucination guard 新增短单段 stock outro 过滤，拦截
   “点赞 / 订阅 / 转发 / 打赏”等多个短视频尾巴标记高度集中的非重复幻觉，并覆盖
   ASR 原始段略超过 30 秒的边界样本，同时保留长会议中的正常上下文词。
+- embedding 阶段优先一次性读取规范化 WAV 后按 diarization turn 切片，避免每个
+  turn 反复走 torchaudio 原生解码路径；读取失败时仍回退到旧的分段加载，并新增
+  `embedding_audio_load_timing` 聚合日志。
 
 ## 0.7.5 — GPU 模型空闲卸载与 CI 质量门禁 (2026-04-29)
 
