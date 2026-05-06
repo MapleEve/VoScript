@@ -8,6 +8,11 @@
 
 - Updated the dependency security baseline and FOSSA policy test coverage to
   tighten the public dependency scanning flow.
+- Moved WhisperX alignment from the yanked `3.1.x` package series to
+  `whisperx==3.3.1`, with compatible `pyannote.audio==3.3.2` and
+  `faster-whisper==1.1.0` pins, plus bounded `pyannote.*` and `pandas`
+  transitive dependencies, while keeping the current `numpy<2` / SciPy 1.11.x
+  dependency baseline.
 
 ### Observability
 
