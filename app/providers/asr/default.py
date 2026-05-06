@@ -113,7 +113,7 @@ def _is_single_segment_hallucination(segment: dict[str, Any]) -> bool:
         return True
 
     outro_count, outro_ratio = _outro_marker_score(normalized)
-    if 3.0 <= duration <= 30.0 and outro_count >= 3 and outro_ratio >= 0.40:
+    if 3.0 <= duration <= 60.0 and outro_count >= 3 and outro_ratio >= 0.40:
         return True
 
     unit, repeat_count, repeat_ratio = _dominant_repeated_unit(normalized)

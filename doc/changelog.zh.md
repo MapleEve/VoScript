@@ -27,8 +27,8 @@
   `WHISPERX_ALIGN_DEVICE=cpu` 与 GPU ASR、diarization、embedding 运行时隔离；
   需要 CUDA alignment 时可显式设为 `pipeline`、`asr`、`cuda` 或 `cuda:0`。
 - ASR hallucination guard 新增短单段 stock outro 过滤，拦截
-  “点赞 / 订阅 / 转发 / 打赏”等多个短视频尾巴标记高度集中的非重复幻觉，同时保留
-  长会议中的正常上下文词。
+  “点赞 / 订阅 / 转发 / 打赏”等多个短视频尾巴标记高度集中的非重复幻觉，并覆盖
+  ASR 原始段略超过 30 秒的边界样本，同时保留长会议中的正常上下文词。
 
 ## 0.7.5 — GPU 模型空闲卸载与 CI 质量门禁 (2026-04-29)
 

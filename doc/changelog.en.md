@@ -33,8 +33,9 @@
   `pipeline`, `asr`, `cuda`, or `cuda:0` after validating CUDA alignment
   stability.
 - The ASR hallucination guard now filters short single-segment stock outros
-  dominated by markers such as "like / subscribe / repost / tip", while keeping
-  normal contextual words in longer meeting transcripts.
+  dominated by markers such as "like / subscribe / repost / tip", including raw
+  ASR segments that are slightly over 30 seconds, while keeping normal
+  contextual words in longer meeting transcripts.
 
 ## 0.7.5 — Idle GPU model unload and CI quality gates (2026-04-29)
 

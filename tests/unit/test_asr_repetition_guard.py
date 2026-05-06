@@ -65,6 +65,22 @@ def test_suppresses_single_segment_stock_outro_hallucination():
     assert report["removed_duration"] == 17.653
 
 
+def test_suppresses_stock_outro_when_raw_asr_segment_is_slightly_over_30s():
+    segments = [
+        {
+            "start": 0.0,
+            "end": 30.36,
+            "text": "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+        }
+    ]
+
+    filtered, report = suppress_repetition_hallucinations(segments)
+
+    assert filtered == []
+    assert report["removed_segment_count"] == 1
+    assert report["removed_duration"] == 30.36
+
+
 def test_keeps_contextual_subscribe_word_in_normal_segment():
     segments = [
         {
