@@ -16,7 +16,9 @@ numpy>=1.24.0,<2.0
 huggingface_hub>=0.20.0
 matplotlib>=3.7
 pydub>=0.25.1
-scipy>=1.11.0
+# Stay on SciPy 1.11.x to avoid dependency/license drift while avoiding the
+# 1.11.0 sdist GPL-hit file: scipy/_lib/unuran/unuran/src/specfunct/log1p.c.
+scipy>=1.11.4,<1.12.0
 # sqlite-vec: fast on-disk top-k cosine search for voiceprints.
 sqlite-vec>=0.1.0
 # whisperx: forced word-level alignment via wav2vec2.
