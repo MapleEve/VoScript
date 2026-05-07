@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## 0.7.6 — Health, alignment, and embedding runtime fixes (2026-05-07)
+
 ### Security
 
 - Updated the dependency security baseline and FOSSA policy test coverage to
@@ -17,12 +19,8 @@
   SciPy 1.11.x / cuDNN9 runtime baseline or trigger cuDNN8 library lookups;
   the `nltk` package needed by alignment is installed explicitly.
 
-### Observability
+### Reliability
 
-- Added safe model-load and transcription-stage timing logs for ASR,
-  diarization, embedding, voiceprint match, enhancement, and pipeline stage
-  timing. Logs record only stage, model, elapsed time, and aggregate metrics;
-  they do not include filenames, paths, job IDs, speaker IDs, hosts, or tokens.
 - Transcription jobs no longer run full Python GC before/after every GPU job;
   active job boundaries only clear the CUDA cache, while full GC remains on the
   idle-unload path. This avoids long GIL holds that can make `/healthz` time out
@@ -40,6 +38,19 @@
   diarization turns, avoiding repeated torchaudio native decoding for every
   turn. It falls back to the previous segmented loader on read failure and adds
   aggregate `embedding_audio_load_timing` logs.
+
+### Observability
+
+- Added safe model-load and transcription-stage timing logs for ASR,
+  diarization, embedding, voiceprint match, enhancement, and pipeline stage
+  timing. Logs record only stage, model, elapsed time, and aggregate metrics;
+  they do not include filenames, paths, job IDs, speaker IDs, hosts, or tokens.
+
+### Validation
+
+- Internal live validation covered 0.7.6 health stability during GPU cleanup,
+  the WhisperX alignment runtime, the stock outro hallucination guard, and the
+  embedding audio slicing / single soundfile load path.
 
 ## 0.7.5 — Idle GPU model unload and CI quality gates (2026-04-29)
 
