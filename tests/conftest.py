@@ -60,10 +60,7 @@ class _ArrayStub(list):
 
     def __getitem__(self, item):
         if isinstance(item, tuple):
-            value = self
-            for index in item:
-                value = _wrap_getitem(value, index)
-            return value
+            return _tuple_getitem(self, item)
         return _wrap_getitem(super().__getitem__(item), item)
 
 
@@ -81,6 +78,23 @@ def _wrap_getitem(value, item):
     if isinstance(value, list) and not isinstance(value, _ArrayStub):
         return _ArrayStub(value)
     return value
+
+
+def _tuple_getitem(values, items):
+    if not items:
+        return values
+
+    index, *rest = items
+    if isinstance(index, slice):
+        raw = values[index]
+        if rest:
+            return _ArrayStub(_tuple_getitem(row, tuple(rest)) for row in raw)
+        return _wrap_getitem(raw, index)
+
+    raw = values[index]
+    if rest:
+        return _tuple_getitem(raw, tuple(rest))
+    return _wrap_getitem(raw, index)
 
 
 def _normalise(value):
