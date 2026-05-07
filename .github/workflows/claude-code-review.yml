@@ -10,7 +10,7 @@ permissions:
   contents: read
   id-token: write
   pull-requests: write
-  issues: read
+  issues: write
 
 jobs:
   review:
@@ -40,7 +40,9 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Run Claude Code review
+        id: claude-review
         if: ${{ env.ANTHROPIC_API_KEY != '' && env.ANTHROPIC_BASE_URL != '' && env.GH_TOKEN_VALUE != '' }}
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -55,3 +57,37 @@ jobs:
             --max-turns 30
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+
+      - name: Post Claude Code review summary
+        if: ${{ always() && github.event_name == 'pull_request' && env.ANTHROPIC_API_KEY != '' && env.ANTHROPIC_BASE_URL != '' && env.GH_TOKEN_VALUE != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CLAUDE_OUTCOME: ${{ steps.claude-review.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MARKER: "<!-- claude-code-review-summary -->"
+        run: |
+          set -euo pipefail
+          short_sha="${HEAD_SHA:0:7}"
+          if [ "$CLAUDE_OUTCOME" = "success" ]; then
+            body="$(printf '%s\n### Claude Code Review\n\nClaude Code Review completed for `%s`.\n\nThis summary is posted even when Claude has no line-level findings. If no separate Claude inline comments are visible, there were no actionable line-level findings for this run.\n\nRun: %s' "$MARKER" "$short_sha" "$RUN_URL")"
+          else
+            body="$(printf '%s\n### Claude Code Review\n\nClaude Code Review did not complete successfully for `%s`.\n\nCheck the workflow run before merging. The check will remain failed so this cannot be missed.\n\nRun: %s' "$MARKER" "$short_sha" "$RUN_URL")"
+          fi
+
+          comment_id="$(
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+              --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | tail -n 1
+          )"
+          if [ -n "$comment_id" ]; then
+            jq -n --arg body "$body" '{body: $body}' \
+              | gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" --input -
+          else
+            jq -n --arg body "$body" '{body: $body}' \
+              | gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --input -
+          fi
+
+      - name: Fail when Claude Code review failed
+        if: ${{ steps.claude-review.outcome == 'failure' }}
+        run: exit 1
