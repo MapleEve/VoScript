@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+### 功能
+
+- 新增完成态结果的可选 `artifacts` manifest。该字段只列出当前结果相关 artifact
+  的类别、角色、文件名、媒体类型和 `speaker_label`，不暴露本地路径、job 运行路径、
+  host、token 或调试信息。默认客户端仍只需读取 `result.json` 主视图；未知或缺失
+  `artifacts` 字段必须被视为兼容。
+
 ## 0.7.6 — 健康检查、alignment 与 embedding 运行时修复 (2026-05-07)
 
 ### 安全

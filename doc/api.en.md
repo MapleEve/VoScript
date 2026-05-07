@@ -180,6 +180,28 @@ practice, omit `denoise_model` to inherit `DENOISE_MODEL`, send
       "max_speakers": 0,
       "no_repeat_ngram_size": 0
     },
+    "artifacts": {
+      "manifest_version": "artifact_manifest.v1",
+      "stable": [
+        {
+          "name": "result",
+          "filename": "result.json",
+          "role": "primary_result",
+          "media_type": "application/json",
+          "required_for_result": true
+        },
+        {
+          "name": "speaker_embedding",
+          "filename": "emb_SPEAKER_00.npy",
+          "role": "speaker_embedding",
+          "media_type": "application/octet-stream",
+          "required_for_result": false,
+          "speaker_label": "SPEAKER_00"
+        }
+      ],
+      "optional": [],
+      "experimental": []
+    },
     "alignment": {
       "status": "succeeded",
       "language": "en",
@@ -198,7 +220,8 @@ enrollment or rename call.
 **Result contract anchors**: completed results report `status="completed"` in
 the persisted transcription object. `segments[].speaker_label` is always the
 raw diarization cluster label. `segments[].words` and top-level `alignment` are
-optional metadata; clients must tolerate either field being absent.
+optional metadata; top-level `artifacts` is optional as well. Clients must
+tolerate these fields being absent.
 
 `speaker_id` / `speaker_name`: matching uses an **adaptive threshold**, not a
 fixed `0.75` cutoff. Actual logic:
@@ -259,6 +282,14 @@ no need to cross-reference the original request. See
 [`configuration.en.md`](./configuration.en.md) for each setting's source and
 default.
 
+**`artifacts`** is an optional manifest describing stable, optional, and
+experimental artifacts that live alongside this result. Current stable entries
+include the primary `result.json` and one `emb_<speaker_label>.npy` speaker
+embedding per cluster. The manifest exposes only filenames, roles, categories,
+media types, and `speaker_label`; it does not expose local paths, hosts, tokens,
+real job runtime paths, or debug data. Default clients do not need this field,
+and older results without `artifacts` remain compatible.
+
 Completed `GET /api/jobs/{id}` results and `GET /api/transcriptions/{id}` share the
 same payload shape. That means `speaker_map` and `unique_speakers` are available in
 the completed job result as well:
@@ -289,6 +320,7 @@ aggregation fields for UI / downstream consumers:
 | --- | --- | --- |
 | `speaker_map` | object | `speaker_label → {matched_id, matched_name, similarity, embedding_key}` mapping; reflects the **diarization model's voiceprint match result** and does not change when segments are manually corrected |
 | `unique_speakers` | array[string] | Deduplicated list of speaker names, recalculated from the persisted `segments[].speaker_name` values to reflect the latest manual corrections |
+| `artifacts` | object | Optional artifact manifest for stable / optional / experimental artifacts; clients must tolerate it being absent |
 
 ### `GET /api/export/{tr_id}`
 

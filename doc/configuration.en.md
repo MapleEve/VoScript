@@ -193,12 +193,17 @@ Stable anchors in completed transcription results:
 - Top-level `alignment`: optional forced-alignment metadata, sanitized.
 - Top-level `params`: effective per-job processing settings, including request
   overrides and service defaults used for this result.
+- Top-level `artifacts`: optional artifact manifest listing stable / optional /
+  experimental artifact filenames, roles, categories, media types, and
+  `speaker_label` values; it never exposes local paths, hosts, tokens, or debug
+  data.
 - `speaker_map`: diarization cluster to voiceprint match map; manual segment
   corrections do not rewrite it.
 - `unique_speakers`: deduplicated current segment display names.
 
 New fields are added under the optional-field principle. Clients should ignore
-unknown fields and tolerate missing `words`, `alignment`, and `warning`.
+unknown fields and tolerate missing `words`, `alignment`, `artifacts`, and
+`warning`.
 
 ## v0.7.6 Validation Wording
 

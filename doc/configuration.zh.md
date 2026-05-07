@@ -178,11 +178,14 @@ cohort 生命周期：
 - `segments[].words`：可选词级 alignment。
 - 顶层 `alignment`：可选 forced-alignment 元数据，字段内容会脱敏。
 - 顶层 `params`：记录本次任务实际使用的请求级与服务级处理参数，便于离线解释结果。
+- 顶层 `artifacts`：可选 artifact manifest，只列出稳定 / 可选 / 实验 artifact 的
+  文件名、角色、类别、媒体类型和 `speaker_label`；不暴露本地路径、主机、token 或
+  调试信息。
 - `speaker_map`：diarization cluster 到声纹匹配结果的映射；人工改单段说话人不会回写它。
 - `unique_speakers`：按当前 segment 展示名去重后的列表。
 
 新增字段按可选字段原则扩展；客户端应忽略不认识的字段，并容忍 `words` /
-`alignment` / `warning` 缺失。
+`alignment` / `artifacts` / `warning` 缺失。
 
 ## v0.7.6 验证口径
 

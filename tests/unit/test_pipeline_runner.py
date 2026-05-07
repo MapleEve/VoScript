@@ -491,6 +491,28 @@ def test_runner_persists_artifacts_and_cleans_generated_audio(tmp_path):
         "language": "zh",
         "reason": "language_disabled",
     }
+    assert result["transcription"]["artifacts"] == {
+        "manifest_version": "artifact_manifest.v1",
+        "stable": [
+            {
+                "name": "result",
+                "filename": "result.json",
+                "role": "primary_result",
+                "media_type": "application/json",
+                "required_for_result": True,
+            },
+            {
+                "name": "speaker_embedding",
+                "filename": "emb_SPEAKER_00.npy",
+                "role": "speaker_embedding",
+                "media_type": "application/octet-stream",
+                "required_for_result": False,
+                "speaker_label": "SPEAKER_00",
+            },
+        ],
+        "optional": [],
+        "experimental": [],
+    }
     assert (
         result["transcription"]["speaker_map"]["SPEAKER_00"]["matched_id"] == "spk_demo"
     )
@@ -503,6 +525,11 @@ def test_runner_persists_artifacts_and_cleans_generated_audio(tmp_path):
     assert result_path.exists()
     persisted_result = json.loads(result_path.read_text(encoding="utf-8"))
     assert persisted_result["asr_hallucination_guard"]["removed_segment_count"] == 2
+    assert persisted_result["artifacts"] == result["transcription"]["artifacts"]
+    assert str(tmp_path) not in json.dumps(
+        persisted_result["artifacts"],
+        ensure_ascii=False,
+    )
     assert emb_path.exists()
     assert not audio_path.with_suffix(".wav").exists()
     assert not audio_path.with_suffix(".denoised.wav").exists()
@@ -579,6 +606,18 @@ def test_artifact_result_contract_keeps_status_speaker_label_and_optional_alignm
     assert result["segments"][0]["speaker_label"] == "SPEAKER_00"
     assert result["segments"][0]["speaker_id"] is None
     assert result["speaker_map"] == {}
+    assert result["artifacts"]["manifest_version"] == "artifact_manifest.v1"
+    assert result["artifacts"]["stable"] == [
+        {
+            "name": "result",
+            "filename": "result.json",
+            "role": "primary_result",
+            "media_type": "application/json",
+            "required_for_result": True,
+        }
+    ]
+    assert result["artifacts"]["optional"] == []
+    assert result["artifacts"]["experimental"] == []
     assert "alignment" not in result
 
 
