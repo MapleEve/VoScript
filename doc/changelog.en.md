@@ -17,7 +17,8 @@
   transitive dependencies. Docker installs WhisperX with `--no-deps` so its old
   ASR transitive dependencies cannot replace the current `numpy<2` /
   SciPy 1.11.x / cuDNN9 runtime baseline or trigger cuDNN8 library lookups;
-  the `nltk` package needed by alignment is installed explicitly.
+  the small Punkt sentence-span API used by alignment is provided by an
+  internal compatibility shim instead of pulling the full NLTK distribution.
 
 ### Reliability
 

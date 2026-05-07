@@ -15,7 +15,8 @@
   `ctranslate2>=4.7.1,<5.0`，同时收紧 `pyannote.*` 与 `pandas` 传递依赖边界。
   Docker 会以 `--no-deps` 安装 WhisperX，避免其旧 ASR 传递依赖覆盖当前
   `numpy<2` / SciPy 1.11.x / cuDNN9 运行时基线并在运行时查找 cuDNN8 动态库；
-  alignment 所需的 `nltk` 由运行时依赖显式安装。
+  alignment 用到的少量 Punkt sentence-span API 由内部兼容 shim 提供，不再拉入完整
+  NLTK 分发包。
 
 ### 可靠性
 

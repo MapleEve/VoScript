@@ -30,8 +30,10 @@ def test_faster_whisper_runtime_stays_on_cudnn9_compatible_ctranslate2():
 def test_docker_installs_whisperx_without_replacing_asr_runtime_stack():
     lines = _requirements_lines()
     dockerfile = _dockerfile_text()
+    root = Path(__file__).resolve().parents[2]
 
-    assert "nltk>=3.9,<4.0" in lines
+    assert not any(line.startswith("nltk") for line in lines)
+    assert (root / "app" / "nltk" / "tokenize" / "punkt.py").exists()
     assert "whisperx==3.3.1" not in lines
     assert (
         'pip install --no-cache-dir -i "$PIP_INDEX_URL" --no-deps whisperx==3.3.1'

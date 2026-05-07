@@ -42,8 +42,9 @@ sqlite-vec>=0.1.0
 # Docker installs whisperx==3.3.1 with --no-deps after this file is resolved.
 # WhisperX 3.3.1 still hard-pins faster-whisper==1.1.0 / ctranslate2<4.5.0,
 # which would replace the cuDNN9-compatible ASR stack above and look for
-# cuDNN8 runtime libraries in the CUDA 12.4 + cuDNN9 base image.
-nltk>=3.9,<4.0
+# cuDNN8 runtime libraries in the CUDA 12.4 + cuDNN9 base image. Its alignment
+# module imports only a tiny Punkt sentence-span API; app/nltk provides that
+# compatibility shim so the image does not need the full NLTK distribution.
 transformers>=5.0.0,<5.1.0
 # Voice enhancement / noise reduction (optional — loaded only when DENOISE_MODEL != "none")
 deepfilternet>=0.5.6
