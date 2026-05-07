@@ -4,19 +4,46 @@
 
 ## Unreleased
 
+## 0.7.6 — 健康检查、alignment 与 embedding 运行时修复 (2026-05-07)
+
 ### 安全
 
 - 更新依赖安全基线与 FOSSA policy test 覆盖，收紧公开依赖扫描流程。
 - 将 WhisperX alignment 从 PyPI yanked 的 `3.1.x` 系列迁移到
   `whisperx==3.3.1`，并配套固定 `pyannote.audio==3.3.2` 与
-  `faster-whisper==1.1.0`，同时收紧 `pyannote.*` 与 `pandas` 传递依赖边界，
-  保持当前 `numpy<2` / SciPy 1.11.x 依赖基线。
+  cuDNN9 兼容的 `faster-whisper>=1.2.1,<2.0.0` /
+  `ctranslate2>=4.7.1,<5.0`，同时收紧 `pyannote.*` 与 `pandas` 传递依赖边界。
+  Docker 会以 `--no-deps` 安装 WhisperX，避免其旧 ASR 传递依赖覆盖当前
+  `numpy<2` / SciPy 1.11.x / cuDNN9 运行时基线并在运行时查找 cuDNN8 动态库；
+  alignment 用到的少量 Punkt sentence-span API 由内部兼容 shim 提供，不再拉入完整
+  NLTK 分发包。
+
+### 可靠性
+
+- 转写 job 前后不再执行完整 Python GC，只清理 CUDA cache；完整 GC 保留在
+  idle-unload 阶段，避免大段 alignment 结果完成后长时间持有 GIL 导致 `/healthz`
+  超时。
+- WhisperX forced alignment 模型现在按语言 / 模型 / 设备缓存复用，并默认通过
+  `WHISPERX_ALIGN_DEVICE=cpu` 与 GPU ASR、diarization、embedding 运行时隔离；
+  需要 CUDA alignment 时可显式设为 `pipeline`、`asr`、`cuda` 或 `cuda:0`。
+- ASR hallucination guard 新增短单段 stock outro 过滤，拦截
+  “点赞 / 订阅 / 转发 / 打赏”等多个短视频尾巴标记高度集中的非重复幻觉，并覆盖
+  ASR 原始段略超过 30 秒的边界样本，同时保留长会议中的正常上下文词。
+- embedding 阶段优先一次性读取规范化 WAV 后按 diarization turn 切片，避免每个
+  turn 反复走 torchaudio 原生解码路径；读取失败时仍回退到旧的分段加载，并新增
+  `embedding_audio_load_timing` 聚合日志。
 
 ### 可观测性
 
 - 新增安全的模型加载与转写阶段耗时日志，覆盖 ASR、diarization、embedding、
   voiceprint match、enhancement 与 pipeline stage timing。日志只记录阶段、模型、
   耗时和聚合指标，不记录文件名、路径、job ID、speaker ID、host 或 token。
+
+### 验证
+
+- internal live validation 覆盖 0.7.6 的 GPU cleanup 期间健康检查稳定性、
+  WhisperX alignment runtime、stock outro hallucination guard，以及 embedding
+  audio slicing / single soundfile load 路径。
 
 ## 0.7.5 — GPU 模型空闲卸载与 CI 质量门禁 (2026-04-29)
 

@@ -204,6 +204,7 @@ A few worth knowing about:
 | `MIN_EMBED_DURATION` | `1.5` | Minimum diarization turn duration used for speaker embedding extraction |
 | `MAX_EMBED_DURATION` | `10.0` | Maximum per-turn audio window used for speaker embedding extraction |
 | `WHISPERX_ALIGN_DISABLED_LANGUAGES` | empty | Comma-separated languages that explicitly skip WhisperX forced alignment; use only as a temporary operational fallback |
+| `WHISPERX_ALIGN_DEVICE` | `cpu` | Runtime device for WhisperX forced alignment; CPU is the default to keep alignment isolated from GPU ASR / speaker-embedding runtimes |
 | `WHISPERX_ALIGN_MODEL_MAP` | empty | Comma-separated `lang=model` overrides, for example `zh=your-org/your-zh-align-model` |
 | `WHISPERX_ALIGN_MODEL_DIR` | empty | Optional alignment model cache directory passed through when the installed WhisperX supports it |
 | `WHISPERX_ALIGN_CACHE_ONLY` | `0` | Set to 1 to request cache-only alignment model loading when supported by the installed WhisperX version |
@@ -217,12 +218,14 @@ For every supported setting, the Whisper / ASR parameters that are not exposed
 as env yet, and AS-norm cohort preservation semantics, see
 [`configuration.en.md`](./configuration.en.md).
 
-Chinese word-level alignment is attempted by default. The Docker image uses
-PyTorch 2.6.0 so recent transformers safety checks can load the default
-Chinese `.bin` alignment weights. If you run a custom image with older torch,
-use torch>=2.6 or a trusted replacement alignment model that provides
-safetensors; only set `WHISPERX_ALIGN_DISABLED_LANGUAGES=zh` if you
-intentionally want a temporary segment-level fallback.
+Chinese word-level alignment is attempted by default and runs on CPU by
+default to keep wav2vec2 alignment isolated from GPU ASR / speaker-embedding
+runtimes. The Docker image uses PyTorch 2.6.0 so recent transformers safety
+checks can load the default Chinese `.bin` alignment weights. If you run a
+custom image with older torch, use torch>=2.6 or a trusted replacement
+alignment model that provides safetensors; only set
+`WHISPERX_ALIGN_DISABLED_LANGUAGES=zh` if you intentionally want a temporary
+segment-level fallback.
 
 ### Host directory ownership
 

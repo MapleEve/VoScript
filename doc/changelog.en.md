@@ -4,15 +4,41 @@
 
 ## Unreleased
 
+## 0.7.6 — Health, alignment, and embedding runtime fixes (2026-05-07)
+
 ### Security
 
 - Updated the dependency security baseline and FOSSA policy test coverage to
   tighten the public dependency scanning flow.
 - Moved WhisperX alignment from the yanked `3.1.x` package series to
   `whisperx==3.3.1`, with compatible `pyannote.audio==3.3.2` and
-  `faster-whisper==1.1.0` pins, plus bounded `pyannote.*` and `pandas`
-  transitive dependencies, while keeping the current `numpy<2` / SciPy 1.11.x
-  dependency baseline.
+  cuDNN9-compatible `faster-whisper>=1.2.1,<2.0.0` /
+  `ctranslate2>=4.7.1,<5.0`, plus bounded `pyannote.*` and `pandas`
+  transitive dependencies. Docker installs WhisperX with `--no-deps` so its old
+  ASR transitive dependencies cannot replace the current `numpy<2` /
+  SciPy 1.11.x / cuDNN9 runtime baseline or trigger cuDNN8 library lookups;
+  the small Punkt sentence-span API used by alignment is provided by an
+  internal compatibility shim instead of pulling the full NLTK distribution.
+
+### Reliability
+
+- Transcription jobs no longer run full Python GC before/after every GPU job;
+  active job boundaries only clear the CUDA cache, while full GC remains on the
+  idle-unload path. This avoids long GIL holds that can make `/healthz` time out
+  after large alignment results complete.
+- WhisperX forced-alignment models are now cached by language / model / device
+  and default to `WHISPERX_ALIGN_DEVICE=cpu`, isolating alignment from GPU ASR,
+  diarization, and embedding runtimes. Operators can explicitly set
+  `pipeline`, `asr`, `cuda`, or `cuda:0` after validating CUDA alignment
+  stability.
+- The ASR hallucination guard now filters short single-segment stock outros
+  dominated by markers such as "like / subscribe / repost / tip", including raw
+  ASR segments that are slightly over 30 seconds, while keeping normal
+  contextual words in longer meeting transcripts.
+- The embedding stage now reads the normalized WAV once and slices it by
+  diarization turns, avoiding repeated torchaudio native decoding for every
+  turn. It falls back to the previous segmented loader on read failure and adds
+  aggregate `embedding_audio_load_timing` logs.
 
 ### Observability
 
@@ -20,6 +46,12 @@
   diarization, embedding, voiceprint match, enhancement, and pipeline stage
   timing. Logs record only stage, model, elapsed time, and aggregate metrics;
   they do not include filenames, paths, job IDs, speaker IDs, hosts, or tokens.
+
+### Validation
+
+- Internal live validation covered 0.7.6 health stability during GPU cleanup,
+  the WhisperX alignment runtime, the stock outro hallucination guard, and the
+  embedding audio slicing / single soundfile load path.
 
 ## 0.7.5 — Idle GPU model unload and CI quality gates (2026-04-29)
 

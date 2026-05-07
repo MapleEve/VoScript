@@ -16,6 +16,18 @@ _PROMPT_CONTAMINATION_MARKERS = (
     "简体中文输出",
     "以下是普通话的对话",
 )
+_OUTRO_HALLUCINATION_MARKERS = (
+    "请不吝点赞",
+    "点赞",
+    "订阅",
+    "转发",
+    "打赏",
+    "打赏支持",
+    "明镜与点点栏目",
+    "谢谢观看",
+    "感谢观看",
+    "下期再见",
+)
 
 
 def _duration(segment: dict[str, Any]) -> float:
@@ -49,6 +61,17 @@ def _prompt_marker_key(normalized_text: str) -> str:
         if marker in normalized_text:
             return f"prompt:{marker}"
     return ""
+
+
+def _outro_marker_score(normalized_text: str) -> tuple[int, float]:
+    if not normalized_text:
+        return 0, 0.0
+
+    matched = {
+        marker for marker in _OUTRO_HALLUCINATION_MARKERS if marker in normalized_text
+    }
+    marker_chars = sum(len(marker) for marker in matched)
+    return len(matched), marker_chars / len(normalized_text)
 
 
 def _dominant_repeated_unit(normalized_text: str) -> tuple[str, int, float]:
@@ -87,6 +110,10 @@ def _is_single_segment_hallucination(segment: dict[str, Any]) -> bool:
     duration = _duration(segment)
     marker_count, marker_ratio = _prompt_marker_score(normalized)
     if duration >= 3.0 and marker_count >= 2 and marker_ratio >= 0.55:
+        return True
+
+    outro_count, outro_ratio = _outro_marker_score(normalized)
+    if 3.0 <= duration <= 60.0 and outro_count >= 3 and outro_ratio >= 0.40:
         return True
 
     unit, repeat_count, repeat_ratio = _dominant_repeated_unit(normalized)

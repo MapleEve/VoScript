@@ -178,6 +178,7 @@ HF_ENDPOINT=https://hf-mirror.com
 | `MIN_EMBED_DURATION` | `1.5` | 提取 speaker embedding 时接受的最短 diarization turn 时长 |
 | `MAX_EMBED_DURATION` | `10.0` | 提取 speaker embedding 时单个 turn 使用的最长音频窗口 |
 | `WHISPERX_ALIGN_DISABLED_LANGUAGES` | 空 | 逗号分隔的显式跳过 forced alignment 语言；只建议作为临时运营降级开关 |
+| `WHISPERX_ALIGN_DEVICE` | `cpu` | WhisperX forced alignment 运行设备；默认 CPU，避免 alignment 与 GPU ASR / speaker embedding 运行时互相影响 |
 | `WHISPERX_ALIGN_MODEL_MAP` | 空 | 逗号分隔的 `lang=model` 覆盖，例如 `zh=your-org/your-zh-align-model` |
 | `WHISPERX_ALIGN_MODEL_DIR` | 空 | 可选 alignment 模型缓存目录；当前 WhisperX 支持时会透传 |
 | `WHISPERX_ALIGN_CACHE_ONLY` | `0` | 设为 1 时，在当前 WhisperX 版本支持的情况下只从缓存加载 alignment 模型 |
@@ -189,11 +190,12 @@ HF_ENDPOINT=https://hf-mirror.com
 所有可用配置项、哪些 Whisper / ASR 参数尚未暴露为 env，以及 AS-norm cohort
 保护语义，见 [`configuration.zh.md`](./configuration.zh.md)。
 
-中文词级 alignment 默认会尝试执行。Docker 镜像使用 PyTorch 2.6.0，可满足
-transformers 新安全检查对默认中文 `.bin` alignment 权重的加载要求。如果你使用
-自定义镜像且 torch 低于 2.6，请升级到 torch>=2.6，或改用提供 safetensors 的可信
-替代 alignment 模型；只有确认要临时降级到段级时间戳时，才设置
-`WHISPERX_ALIGN_DISABLED_LANGUAGES=zh`。
+中文词级 alignment 默认会尝试执行，并默认在 CPU 上运行，以避免 wav2vec2
+alignment 与 GPU ASR / speaker embedding 运行时互相影响。Docker 镜像使用
+PyTorch 2.6.0，可满足 transformers 新安全检查对默认中文 `.bin` alignment 权重的
+加载要求。如果你使用自定义镜像且 torch 低于 2.6，请升级到 torch>=2.6，或改用
+提供 safetensors 的可信替代 alignment 模型；只有确认要临时降级到段级时间戳时，
+才设置 `WHISPERX_ALIGN_DISABLED_LANGUAGES=zh`。
 
 ### 宿主目录所有者
 

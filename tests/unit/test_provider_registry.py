@@ -612,6 +612,80 @@ def test_default_diarization_provider_attempts_zh_alignment_by_default(monkeypat
     assert result.dedup_removed == 0
 
 
+def test_default_diarization_provider_caches_alignment_model_on_configured_device(
+    monkeypatch,
+    caplog,
+):
+    pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
+    pipeline.device = "cuda:1"
+    calls = []
+
+    class FakeDiarizationResult:
+        def itertracks(self, yield_label=False):
+            assert yield_label is True
+            yield SimpleNamespace(start=0.0, end=1.2), None, "SPEAKER_00"
+
+    class FakeDiarizer:
+        def __call__(self, audio_path, **kwargs):
+            return FakeDiarizationResult()
+
+    pipeline._diarization = FakeDiarizer()
+    monkeypatch.setattr(diarization_default, "WHISPERX_ALIGN_DEVICE", "cpu")
+    whisperx = sys.modules["whisperx"]
+    monkeypatch.setattr(
+        whisperx,
+        "load_audio",
+        lambda audio_path: f"audio:{audio_path}",
+        raising=False,
+    )
+
+    def fake_load_align_model(language_code, device):
+        calls.append(("load_align_model", language_code, device))
+        return object(), {"language": language_code, "device": device}
+
+    def fake_align(
+        segments,
+        align_model,
+        align_metadata,
+        audio,
+        device,
+        return_char_alignments=False,
+    ):
+        calls.append(("align", align_metadata["device"], device))
+        return {"segments": segments}
+
+    monkeypatch.setattr(
+        whisperx,
+        "load_align_model",
+        fake_load_align_model,
+        raising=False,
+    )
+    monkeypatch.setattr(whisperx, "align", fake_align, raising=False)
+
+    request = DiarizationRequest(
+        pipeline=pipeline,
+        audio_path="demo.wav",
+        transcription_result={
+            "segments": [{"start": 0.0, "end": 1.2, "text": "你好"}],
+            "language": "zh",
+        },
+    )
+
+    with caplog.at_level("INFO", logger=diarization_default.logger.name):
+        default_diarization_provider.diarize(request)
+        default_diarization_provider.diarize(request)
+
+    assert calls == [
+        ("load_align_model", "zh", "cpu"),
+        ("align", "cpu", "cpu"),
+        ("align", "cpu", "cpu"),
+    ]
+    assert "Loaded WhisperX alignment model" in caplog.text
+    assert "cold_load=True" in caplog.text
+    assert "Reusing WhisperX alignment model (hot reuse" in caplog.text
+    assert pipeline._alignment_device == "cpu"
+
+
 def test_default_diarization_provider_skips_zh_alignment_when_explicitly_disabled(
     monkeypatch,
 ):
@@ -877,7 +951,7 @@ def test_default_embedding_provider_moves_chunks_to_embedding_device(
     pipeline.device = "cuda:0"
     pipeline._embedding_device = "cuda:1"
     calls = []
-    perf_values = iter([30.0, 30.75])
+    perf_values = iter([29.0, 30.0, 30.75])
 
     class FakeTensor:
         def __init__(self, channels, frames):
@@ -930,6 +1004,106 @@ def test_default_embedding_provider_moves_chunks_to_embedding_device(
     assert "speaker_count=1" in caplog.text
     assert calls == [
         ("to", "cuda:1", 32000),
+        ("embedding_model", 32000),
+    ]
+
+
+def test_default_embedding_provider_prefers_single_soundfile_load(monkeypatch):
+    pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
+    pipeline.device = "cpu"
+    calls = []
+
+    class FakeTensor:
+        def __init__(self, channels, frames):
+            self.shape = (channels, frames)
+
+        def __getitem__(self, key):
+            channel_key, frame_key = key
+            assert isinstance(channel_key, slice)
+            assert channel_key == slice(None)
+            start = frame_key.start or 0
+            stop = frame_key.stop or self.shape[1]
+            return FakeTensor(self.shape[0], max(stop - start, 0))
+
+        def contiguous(self):
+            calls.append(("contiguous", self.shape[1]))
+            return self
+
+        def mean(self, dim=0, keepdim=True):
+            assert dim == 0
+            assert keepdim is True
+            return FakeTensor(1, self.shape[1])
+
+        def to(self, device):
+            calls.append(("to", device, self.shape[1]))
+            return self
+
+    class FakeEmbeddingModel:
+        def __call__(self, payload):
+            calls.append(("embedding_model", payload["waveform"].shape[1]))
+            return [float(payload["waveform"].shape[1]), 2.0]
+
+    class FakeArray:
+        def __init__(self, shape):
+            self.shape = shape
+
+        @property
+        def T(self):
+            return FakeArray(tuple(reversed(self.shape)))
+
+        def copy(self):
+            return self
+
+    pipeline._embedding_model = FakeEmbeddingModel()
+    monkeypatch.setattr(
+        embedding_default.sf,
+        "read",
+        lambda audio_path, dtype, always_2d: (
+            FakeArray((48000, 1)),
+            16000,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        embedding_default.torch,
+        "from_numpy",
+        lambda data: calls.append(("from_numpy", data.shape)) or FakeTensor(1, 48000),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        embedding_default.torchaudio,
+        "info",
+        lambda audio_path: (_ for _ in ()).throw(
+            AssertionError("torchaudio.info should not be used for canonical audio")
+        ),
+    )
+    monkeypatch.setattr(
+        embedding_default.torchaudio,
+        "load",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("torchaudio.load should not be used for canonical audio")
+        ),
+    )
+
+    result = default_speaker_embedding_provider.extract_embeddings(
+        SpeakerEmbeddingRequest(
+            pipeline=pipeline,
+            audio_path="demo.wav",
+            diarization_turns=[
+                {"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0},
+                {"speaker": "SPEAKER_00", "start": 2.0, "end": 4.0},
+            ],
+        )
+    )
+
+    assert result.speaker_embeddings["SPEAKER_00"].tolist() == [32000.0, 2.0]
+    assert calls == [
+        ("from_numpy", (1, 48000)),
+        ("contiguous", 32000),
+        ("contiguous", 32000),
+        ("to", "cpu", 32000),
+        ("embedding_model", 32000),
+        ("to", "cpu", 32000),
         ("embedding_model", 32000),
     ]
 

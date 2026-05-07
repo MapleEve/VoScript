@@ -12,6 +12,7 @@ from inspect import Parameter, signature
 from typing import Any
 
 from config import (
+    WHISPERX_ALIGN_DEVICE,
     WHISPERX_ALIGN_CACHE_ONLY,
     WHISPERX_ALIGN_DISABLED_LANGUAGES,
     WHISPERX_ALIGN_MODEL_DIR,
@@ -104,6 +105,35 @@ def _alignment_disabled(language: str) -> bool:
     return (
         language in WHISPERX_ALIGN_DISABLED_LANGUAGES
         and language not in WHISPERX_ALIGN_MODEL_MAP
+    )
+
+
+def _resolve_alignment_device(pipeline) -> str:
+    configured = (WHISPERX_ALIGN_DEVICE or "cpu").strip().lower()
+    if configured in {"pipeline", "asr"}:
+        return str(getattr(pipeline, "device", "cpu") or "cpu")
+    if configured == "auto":
+        selector = getattr(pipeline, "_select_device_for_lazy_load", None)
+        if callable(selector):
+            return str(selector("_alignment_device"))
+        return str(getattr(pipeline, "device", "cpu") or "cpu")
+    return configured or "cpu"
+
+
+def _alignment_cache_key(
+    *,
+    language: str,
+    model_name: str | None,
+    model_source: str,
+    device: str,
+) -> tuple[str, str | None, str, str | None, bool, str]:
+    return (
+        language,
+        model_name,
+        model_source,
+        WHISPERX_ALIGN_MODEL_DIR,
+        WHISPERX_ALIGN_CACHE_ONLY,
+        device,
     )
 
 
@@ -248,32 +278,61 @@ def align_diarized_segments_with_metadata(
         preflight_message = _torch_preflight_message(language, model_name)
         if preflight_message:
             logger.info(preflight_message)
+        alignment_device = _resolve_alignment_device(pipeline)
         audio = whisperx.load_audio(audio_path)
         load_kwargs = _load_align_model_kwargs(
             whisperx.load_align_model,
             language,
-            pipeline.device,
+            alignment_device,
         )
-        load_started = time.perf_counter()
-        with _cache_only_alignment_environment():
-            align_model, align_metadata = whisperx.load_align_model(
-                **load_kwargs,
+        cache_key = _alignment_cache_key(
+            language=language,
+            model_name=model_name,
+            model_source=model_source,
+            device=alignment_device,
+        )
+        cached_key = getattr(pipeline, "_alignment_cache_key", None)
+        align_model = getattr(pipeline, "_alignment_model", None)
+        align_metadata = getattr(pipeline, "_alignment_metadata", None)
+        if (
+            cached_key == cache_key
+            and align_model is not None
+            and align_metadata is not None
+        ):
+            logger.info(
+                "Reusing WhisperX alignment model (hot reuse, language=%s, model_source=%s, device=%s)",
+                language,
+                model_source,
+                alignment_device,
             )
-        logger.info(
-            "Loaded WhisperX alignment model in %.2fs "
-            "(cold_load=True, language=%s, model_source=%s, device=%s)",
-            time.perf_counter() - load_started,
-            language,
-            model_source,
-            pipeline.device,
-        )
+        else:
+            setattr(pipeline, "_alignment_model", None)
+            setattr(pipeline, "_alignment_metadata", None)
+            setattr(pipeline, "_alignment_cache_key", None)
+            load_started = time.perf_counter()
+            with _cache_only_alignment_environment():
+                align_model, align_metadata = whisperx.load_align_model(
+                    **load_kwargs,
+                )
+            setattr(pipeline, "_alignment_model", align_model)
+            setattr(pipeline, "_alignment_metadata", align_metadata)
+            setattr(pipeline, "_alignment_cache_key", cache_key)
+            setattr(pipeline, "_alignment_device", alignment_device)
+            logger.info(
+                "Loaded WhisperX alignment model in %.2fs "
+                "(cold_load=True, language=%s, model_source=%s, device=%s)",
+                time.perf_counter() - load_started,
+                language,
+                model_source,
+                alignment_device,
+            )
         processing_started = time.perf_counter()
         aligned_result = whisperx.align(
             segments,
             align_model,
             align_metadata,
             audio,
-            pipeline.device,
+            alignment_device,
             return_char_alignments=False,
         )
         processing_elapsed_s = time.perf_counter() - processing_started
@@ -283,7 +342,7 @@ def align_diarized_segments_with_metadata(
             processing_elapsed_s,
             language,
             len(segments),
-            pipeline.device,
+            alignment_device,
         )
         logger.info("WhisperX forced alignment succeeded for language=%s", language)
         metadata = {

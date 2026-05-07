@@ -6,6 +6,8 @@ import logging
 import time
 
 import numpy as np
+import soundfile as sf
+import torch
 import torchaudio
 
 from config import MAX_EMBED_DURATION, MIN_EMBED_DURATION
@@ -18,6 +20,22 @@ from pipeline.contracts import (
 logger = logging.getLogger(__name__)
 
 
+def _load_full_waveform(audio_path: str):
+    """Load normalized audio once with libsndfile to avoid per-turn torch decode."""
+
+    load_started = time.perf_counter()
+    data, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+    waveform = torch.from_numpy(data.T.copy())
+    logger.info(
+        "embedding_audio_load_timing backend=soundfile elapsed_s=%.3f sample_rate=%d channels=%d frames=%d",
+        time.perf_counter() - load_started,
+        sample_rate,
+        waveform.shape[0],
+        waveform.shape[1],
+    )
+    return waveform, sample_rate
+
+
 def extract_embeddings_for_turns(
     pipeline,
     audio_path: str,
@@ -25,8 +43,16 @@ def extract_embeddings_for_turns(
 ) -> dict[str, np.ndarray]:
     """Extract averaged embeddings for each speaker cluster."""
 
-    info = torchaudio.info(audio_path)
-    native_sr = info.sample_rate
+    waveform = None
+    try:
+        waveform, native_sr = _load_full_waveform(audio_path)
+    except Exception as exc:
+        logger.warning(
+            "Falling back to torchaudio segment loading for embedding audio: %s",
+            exc,
+        )
+        info = torchaudio.info(audio_path)
+        native_sr = info.sample_rate
     target_sr = 16000
     min_samples = int(MIN_EMBED_DURATION * native_sr)
     max_samples = int(MAX_EMBED_DURATION * native_sr)
@@ -43,19 +69,25 @@ def extract_embeddings_for_turns(
         if num_frames > max_samples:
             num_frames = max_samples
 
-        try:
-            chunk, chunk_sr = torchaudio.load(
-                audio_path,
-                frame_offset=start_sample,
-                num_frames=num_frames,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to load embedding audio segment [%d:%d]: %s",
-                start_sample,
-                end_sample,
-                exc,
-            )
+        if waveform is not None:
+            chunk = waveform[:, start_sample : start_sample + num_frames].contiguous()
+            chunk_sr = native_sr
+        else:
+            try:
+                chunk, chunk_sr = torchaudio.load(
+                    audio_path,
+                    frame_offset=start_sample,
+                    num_frames=num_frames,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load embedding audio segment [%d:%d]: %s",
+                    start_sample,
+                    end_sample,
+                    exc,
+                )
+                continue
+        if chunk.shape[1] <= 0:
             continue
 
         if chunk_sr != target_sr:

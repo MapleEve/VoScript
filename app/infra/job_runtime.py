@@ -87,16 +87,25 @@ def flush_torch_cuda_cache(
     """Best-effort CUDA cache flush used around serialized GPU work."""
 
     try:
-        import gc as _gc
-
         import torch as _torch
 
-        _gc.collect()
+        # Full Python GC can hold the GIL long enough to make FastAPI liveness
+        # probes time out after large alignment results. Keep active job
+        # boundaries lightweight; the idle-unload path remains the heavy cleanup
+        # point because it runs after the GPU pipeline has been idle.
+        if phase == "idle-unload":
+            _collect_python_gc()
         if _torch.cuda.is_available():
             _torch.cuda.empty_cache()
     except Exception as exc:  # pragma: no cover - guarded for runtime-only failures
         if logger is not None:
             logger.warning("%s CUDA cache flush failed: %s", phase, exc)
+
+
+def _collect_python_gc() -> None:
+    import gc as _gc
+
+    _gc.collect()
 
 
 def run_serialized_gpu_work(
