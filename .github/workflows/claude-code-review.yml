@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
   pull-requests: write
   issues: read
 
@@ -26,20 +27,30 @@ jobs:
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      GH_TOKEN_VALUE: ${{ secrets.GH_TOKEN }}
+      CLAUDE_MODEL: claude-sonnet-4-6
     steps:
-      - name: Skip when ANTHROPIC_API_KEY is not configured
-        if: ${{ env.ANTHROPIC_API_KEY == '' }}
-        run: echo "ANTHROPIC_API_KEY is not configured; skipping Claude Code review."
+      - name: Skip when Claude secrets are not configured
+        if: ${{ env.ANTHROPIC_API_KEY == '' || env.ANTHROPIC_BASE_URL == '' || env.GH_TOKEN_VALUE == '' }}
+        run: echo "Claude Code review secrets are not configured; skipping Claude Code review."
+      - name: Checkout repository
+        if: ${{ env.ANTHROPIC_API_KEY != '' && env.ANTHROPIC_BASE_URL != '' && env.GH_TOKEN_VALUE != '' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
       - name: Run Claude Code review
-        if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        if: ${{ env.ANTHROPIC_API_KEY != '' && env.ANTHROPIC_BASE_URL != '' && env.GH_TOKEN_VALUE != '' }}
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GH_TOKEN }}
           prompt: |
             Review this pull request using REVIEW.md as the review-only guide.
             Focus on actionable VoScript risks: privacy/security leaks, model lifecycle races,
             GPU/CPU fallback behavior, HTTP API compatibility, regression-test coverage, and
             synchronized English/Chinese documentation. Avoid formatting-only comments.
-          claude_args: "--max-turns 5"
+          claude_args: |
+            --model ${{ env.CLAUDE_MODEL }}
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}

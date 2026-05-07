@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from contextlib import contextmanager
 from inspect import signature
 from pathlib import Path
 from types import ModuleType
 
+import numpy as np
+import pytest
 import infra.audio.hash_index as hash_index_module
 import infra.audio as audio_infra
 import providers
 import providers.enhance.default as enhance_default
+import providers.normalize.default as normalize_default
+import providers.voiceprint_match.default as voiceprint_match_default
 from infra.audio import JsonAudioArtifactIndex
 from pipeline.contracts import (
     AudioEnhancementRequest,
     AudioNormalizationRequest,
     UploadPersistenceRequest,
+    VoiceprintMatchRequest,
 )
 from api.routers.transcriptions import transcribe
 
@@ -101,6 +107,116 @@ def test_denoise_api_snr_threshold_overrides_env_default(monkeypatch, tmp_path):
     assert result.applied is False
     assert result.model == "deepfilternet"
     assert result.output_path == wav_path
+
+
+def test_unknown_denoise_model_is_a_noop(tmp_path, caplog):
+    wav_path = tmp_path / "sample.wav"
+    wav_path.write_bytes(b"stub")
+
+    with caplog.at_level("WARNING", logger=enhance_default.logger.name):
+        result = enhance_default.ConditionalDenoiseEnhancer().enhance(
+            AudioEnhancementRequest(wav_path=wav_path, model="unsupported")
+        )
+
+    assert result.applied is False
+    assert result.output_path == wav_path
+    assert result.model == "unsupported"
+    assert "Unknown DENOISE_MODEL='unsupported'" in caplog.text
+
+
+def test_estimate_snr_uses_energy_heuristic(monkeypatch, tmp_path):
+    class FakeTensor:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        @property
+        def shape(self):
+            return self.values.shape
+
+        def __len__(self):
+            return len(self.values)
+
+        def __getitem__(self, item):
+            return FakeTensor(self.values[item])
+
+        def mean(self, dim=None, keepdim=False):
+            return FakeTensor(np.mean(self.values, axis=dim, keepdims=keepdim))
+
+        def squeeze(self, dim):
+            return FakeTensor(np.squeeze(self.values, axis=dim))
+
+        def reshape(self, *shape):
+            return FakeTensor(self.values.reshape(*shape))
+
+        def pow(self, power):
+            return FakeTensor(np.power(self.values, power))
+
+        def sqrt(self):
+            return FakeTensor(np.sqrt(self.values))
+
+        def sort(self):
+            return FakeTensor(np.sort(self.values)), None
+
+        def item(self):
+            return float(np.asarray(self.values).item())
+
+    quiet = np.full(60, 0.1, dtype=np.float32)
+    speech = np.ones(240, dtype=np.float32)
+    mono = np.concatenate([quiet, speech])
+    stereo = np.stack([mono, mono])
+    torchaudio_module = ModuleType("torchaudio")
+    torchaudio_module.load = lambda path: (FakeTensor(stereo), 1000)
+    monkeypatch.setitem(sys.modules, "torchaudio", torchaudio_module)
+
+    assert enhance_default._estimate_snr(tmp_path / "sample.wav") == pytest.approx(20.0)
+
+
+def test_estimate_snr_returns_inf_for_too_short_or_silent_noise(monkeypatch, tmp_path):
+    class FakeTensor:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        @property
+        def shape(self):
+            return self.values.shape
+
+        def __len__(self):
+            return len(self.values)
+
+        def __getitem__(self, item):
+            return FakeTensor(self.values[item])
+
+        def squeeze(self, dim):
+            return FakeTensor(np.squeeze(self.values, axis=dim))
+
+        def reshape(self, *shape):
+            return FakeTensor(self.values.reshape(*shape))
+
+        def pow(self, power):
+            return FakeTensor(np.power(self.values, power))
+
+        def mean(self, dim=None, keepdim=False):
+            return FakeTensor(np.mean(self.values, axis=dim, keepdims=keepdim))
+
+        def sqrt(self):
+            return FakeTensor(np.sqrt(self.values))
+
+        def sort(self):
+            return FakeTensor(np.sort(self.values)), None
+
+        def item(self):
+            return float(np.asarray(self.values).item())
+
+    torchaudio_module = ModuleType("torchaudio")
+    samples = [
+        FakeTensor(np.zeros((1, 60))),
+        FakeTensor(np.concatenate([np.zeros(60), np.ones(240)]).reshape(1, 300)),
+    ]
+    torchaudio_module.load = lambda path: (samples.pop(0), 1000)
+    monkeypatch.setitem(sys.modules, "torchaudio", torchaudio_module)
+
+    assert enhance_default._estimate_snr(tmp_path / "short.wav") == float("inf")
+    assert enhance_default._estimate_snr(tmp_path / "silent-noise.wav") == float("inf")
 
 
 def test_deepfilternet_lazy_load_logs_elapsed_time(monkeypatch, caplog):
@@ -266,3 +382,121 @@ def test_hash_index_infra_requires_completed_result(monkeypatch, tmp_path):
 
     store.register("hash-b", "tr_ready")
     assert store.lookup("hash-b") == "tr_ready"
+
+
+def test_ffmpeg_normalizer_reuses_existing_target_format(tmp_path):
+    wav_path = tmp_path / "already.wav"
+    wav_path.write_bytes(b"wav")
+
+    result = normalize_default.FFmpegInputNormalizer().normalize(
+        AudioNormalizationRequest(input_path=wav_path)
+    )
+
+    assert result.reused_source is True
+    assert result.source_path == wav_path
+    assert result.normalized_path == wav_path
+
+
+def test_ffmpeg_normalizer_invokes_ffmpeg_for_non_wav(monkeypatch, tmp_path):
+    source = tmp_path / "meeting.ogg"
+    source.write_bytes(b"ogg")
+    calls = []
+
+    def fake_run(args, *, check, timeout):
+        calls.append((args, check, timeout))
+
+    monkeypatch.setattr(normalize_default.subprocess, "run", fake_run)
+
+    result = normalize_default.FFmpegInputNormalizer().normalize(
+        AudioNormalizationRequest(input_path=source)
+    )
+
+    args, check, timeout = calls[0]
+    assert check is True
+    assert timeout == normalize_default.FFMPEG_TIMEOUT_SEC
+    assert args[:6] == ["ffmpeg", "-y", "-v", "error", "-i", str(source)]
+    assert args[-2:] == ["--", str(tmp_path / "meeting.wav")]
+    assert result.reused_source is False
+    assert result.normalized_path == tmp_path / "meeting.wav"
+
+
+def test_ffmpeg_normalizer_timeout_cleans_partial(monkeypatch, tmp_path):
+    source = tmp_path / "meeting.mp3"
+    source.write_bytes(b"mp3")
+    partial = tmp_path / "meeting.wav"
+    partial.write_bytes(b"partial")
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=1)
+
+    monkeypatch.setattr(normalize_default.subprocess, "run", fake_run)
+
+    with pytest.raises(Exception) as excinfo:
+        normalize_default.FFmpegInputNormalizer().normalize(
+            AudioNormalizationRequest(input_path=source)
+        )
+
+    assert getattr(excinfo.value, "status_code", None) == 504
+    assert not partial.exists()
+
+
+def test_voiceprint_match_provider_reports_no_embeddings():
+    result = voiceprint_match_default.DefaultVoiceprintMatchProvider().match(
+        VoiceprintMatchRequest(
+            speaker_embeddings={},
+            voiceprint_db=object(),
+            threshold=0.72,
+        )
+    )
+
+    assert result.applied is False
+    assert result.speaker_map == {}
+    assert result.threshold == 0.72
+    assert result.reason == "no_embeddings"
+
+
+def test_voiceprint_match_provider_reports_missing_db():
+    result = voiceprint_match_default.DefaultVoiceprintMatchProvider().match(
+        VoiceprintMatchRequest(
+            speaker_embeddings={"SPEAKER_00": [1.0, 0.0]},
+            voiceprint_db=None,
+            threshold=None,
+        )
+    )
+
+    assert result.applied is False
+    assert result.speaker_map == {}
+    assert result.reason == "voiceprint_db_unavailable"
+
+
+def test_voiceprint_match_provider_uses_identify_threshold_when_supplied():
+    class FakeDB:
+        def __init__(self):
+            self.calls = []
+
+        def identify(self, embedding, threshold=None):
+            self.calls.append((embedding, threshold))
+            return "spk_1", "Maple", 0.87654
+
+    fake_db = FakeDB()
+
+    result = voiceprint_match_default.DefaultVoiceprintMatchProvider().match(
+        VoiceprintMatchRequest(
+            speaker_embeddings={"SPEAKER_00": [0.1, 0.9]},
+            voiceprint_db=fake_db,
+            threshold=0.75,
+        )
+    )
+
+    assert fake_db.calls == [([0.1, 0.9], 0.75)]
+    assert result.applied is True
+    assert result.reason == "matched"
+    assert result.threshold == 0.75
+    assert result.speaker_map == {
+        "SPEAKER_00": {
+            "matched_id": "spk_1",
+            "matched_name": "Maple",
+            "similarity": 0.8765,
+            "embedding_key": "SPEAKER_00",
+        }
+    }
