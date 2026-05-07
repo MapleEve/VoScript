@@ -175,6 +175,28 @@ curl -X POST http://localhost:8780/api/transcribe \
       "max_speakers": 0,
       "no_repeat_ngram_size": 0
     },
+    "artifacts": {
+      "manifest_version": "artifact_manifest.v1",
+      "stable": [
+        {
+          "name": "result",
+          "filename": "result.json",
+          "role": "primary_result",
+          "media_type": "application/json",
+          "required_for_result": true
+        },
+        {
+          "name": "speaker_embedding",
+          "filename": "emb_SPEAKER_00.npy",
+          "role": "speaker_embedding",
+          "media_type": "application/octet-stream",
+          "required_for_result": false,
+          "speaker_label": "SPEAKER_00"
+        }
+      ],
+      "optional": [],
+      "experimental": []
+    },
     "alignment": {
       "status": "succeeded",
       "language": "zh",
@@ -191,7 +213,8 @@ curl -X POST http://localhost:8780/api/transcribe \
 
 **结果契约锚点**：完成态持久化转写对象会带 `status="completed"`。
 `segments[].speaker_label` 永远是原始 diarization cluster 标签。
-`segments[].words` 和顶层 `alignment` 都是可选元数据，客户端必须能接受字段缺失。
+`segments[].words`、顶层 `alignment` 和顶层 `artifacts` 都是可选元数据，
+客户端必须能接受字段缺失。
 
 `speaker_id` 和 `speaker_name`：匹配采用**自适应阈值**，不是固定 0.75。实际逻辑：
 
@@ -231,6 +254,12 @@ alignment 模型会记录为 `jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-c
 都可独立解读，无需再查原始请求。各配置项来源和默认值见
 [`configuration.zh.md`](./configuration.zh.md)。
 
+**`artifacts`** 是可选 manifest，用于描述与该结果同目录的稳定、可选和实验性
+artifact。当前稳定项包括主结果 `result.json` 和每个说话人 cluster 的
+`emb_<speaker_label>.npy`。manifest 只暴露文件名、角色、类别、媒体类型和
+`speaker_label`，不暴露本地路径、主机、token、真实 job 运行路径或调试信息。
+默认客户端不需要依赖该字段；老结果没有 `artifacts` 时仍应按兼容结果处理。
+
 `GET /api/jobs/{id}` 的完成态结果与 `GET /api/transcriptions/{id}` 使用同一份
 持久化结果结构，因此完成态里同样会带上 `speaker_map` 和 `unique_speakers`：
 
@@ -260,6 +289,7 @@ alignment 模型会记录为 `jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-c
 | --- | --- | --- |
 | `speaker_map` | object | `speaker_label → {matched_id, matched_name, similarity, embedding_key}` 的映射，反映 **diarization 模型的声纹匹配结果**，不随人工单段纠错变化；便于前端一次性渲染人名下拉 / 统计 |
 | `unique_speakers` | array[string] | 去重后的说话人名列表，从持久化结果里的 `segments[].speaker_name` 重算，反映最新的人工纠错结果 |
+| `artifacts` | object | 可选 artifact manifest；用于发现结果相关的稳定 / 可选 / 实验 artifact，缺失时必须兼容 |
 
 与 `GET /api/jobs/{id}` 不同，本端点始终从磁盘读取持久化结果，**进程重启后仍可访问**，
 也能反映最新的人工纠错；`/api/jobs/{id}` 优先读内存，内存未命中时才回落到磁盘（见上方注意事项）。

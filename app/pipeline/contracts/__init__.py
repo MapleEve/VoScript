@@ -2,13 +2,16 @@
 
 from .asr import ASRProvider, ASRRequest, ASRResult
 from .artifacts import (
+    ARTIFACT_MANIFEST_VERSION,
     AsyncUploadReader,
     AudioArtifactIndex,
+    ArtifactManifestEntry,
     PersistedTranscriptionArtifacts,
     SavedUploadArtifact,
     TranscriptionArtifactStore,
     TranscriptionArtifactWriteRequest,
     UploadPersistenceRequest,
+    build_artifact_manifest,
 )
 from .context import PipelineContext
 from .diarization import (
@@ -48,6 +51,7 @@ __all__ = [
     "ASRProvider",
     "ASRRequest",
     "ASRResult",
+    "ARTIFACT_MANIFEST_VERSION",
     "AsyncUploadReader",
     "AudioArtifactIndex",
     "AudioEnhancementProvider",
@@ -55,6 +59,7 @@ __all__ = [
     "AudioEnhancementResult",
     "AudioNormalizationRequest",
     "AudioNormalizationResult",
+    "ArtifactManifestEntry",
     "DiarizationProvider",
     "DiarizationRequest",
     "DiarizationResult",
@@ -76,4 +81,5 @@ __all__ = [
     "VoiceprintMatchProvider",
     "VoiceprintMatchRequest",
     "VoiceprintMatchResult",
+    "build_artifact_manifest",
 ]

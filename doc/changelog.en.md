@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+### Features
+
+- Added an optional `artifacts` manifest to completed results. The manifest
+  lists artifact category, role, filename, media type, and `speaker_label`
+  where relevant; it does not expose local paths, job runtime paths, hosts,
+  tokens, or debug data. Default clients can continue to rely only on the
+  `result.json` primary view, and must treat unknown or missing `artifacts`
+  fields as compatible.
+
 ## 0.7.6 — Health, alignment, and embedding runtime fixes (2026-05-07)
 
 ### Security

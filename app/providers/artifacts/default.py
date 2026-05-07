@@ -6,8 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import DENOISE_MODEL, DENOISE_SNR_THRESHOLD
+from infra.audio.paths import safe_speaker_label
 from infra.transcription_artifacts import persist_transcription_artifacts
-from pipeline.contracts import PipelineContext, PipelineResult
+from pipeline.contracts import (
+    ArtifactManifestEntry,
+    PipelineContext,
+    PipelineResult,
+    build_artifact_manifest,
+)
 
 
 class InMemoryArtifactsProvider:
@@ -89,6 +95,7 @@ class InMemoryArtifactsProvider:
             context.aligned_segments,
             context.voiceprint_matches,
         )
+        embedding_labels = sorted(context.speaker_embeddings)
         warning = None
         if not context.voiceprint_matches and not context.speaker_embeddings:
             warning = "no_speakers_detected"
@@ -111,6 +118,7 @@ class InMemoryArtifactsProvider:
                 "max_speakers": context.request.max_speakers,
                 "no_repeat_ngram_size": context.request.no_repeat_ngram_size or 0,
             },
+            "artifacts": self._build_artifact_manifest(embedding_labels),
         }
         if context.transcription_result is not None:
             guard_report = context.transcription_result.get("hallucination_guard")
@@ -122,6 +130,29 @@ class InMemoryArtifactsProvider:
         if warning is not None:
             transcription["warning"] = warning
         return transcription
+
+    @staticmethod
+    def _build_artifact_manifest(speaker_labels: list[str]) -> dict:
+        stable = [
+            ArtifactManifestEntry(
+                name="result",
+                filename="result.json",
+                role="primary_result",
+                media_type="application/json",
+                required_for_result=True,
+            )
+        ]
+        stable.extend(
+            ArtifactManifestEntry(
+                name="speaker_embedding",
+                filename=f"emb_{safe_speaker_label(speaker_label)}.npy",
+                role="speaker_embedding",
+                media_type="application/octet-stream",
+                speaker_label=speaker_label,
+            )
+            for speaker_label in speaker_labels
+        )
+        return build_artifact_manifest(stable=stable)
 
     def build(self, context: PipelineContext) -> PipelineResult:
         transcription = self._build_transcription(context)

@@ -34,8 +34,103 @@ def _make_stub(name: str, **attrs) -> types.ModuleType:
 
 
 class _ArrayStub(list):
+    @property
+    def shape(self):
+        return _shape(self)
+
     def tolist(self):
         return list(self)
+
+    def item(self):
+        flat = _flatten(self)
+        if len(flat) != 1:
+            raise ValueError("can only convert an array of size 1 to a scalar")
+        return flat[0]
+
+    def mean(self):
+        flat = [float(item) for item in _flatten(self)]
+        if not flat:
+            return _ArrayStub()
+        return sum(flat) / len(flat)
+
+    def reshape(self, *shape):
+        if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
+            shape = tuple(shape[0])
+        return _reshape(_flatten(self), tuple(int(item) for item in shape))
+
+    def __getitem__(self, item):
+        if isinstance(item, tuple):
+            value = self
+            for index in item:
+                value = _wrap_getitem(value, index)
+            return value
+        return _wrap_getitem(super().__getitem__(item), item)
+
+
+def _shape(values):
+    if isinstance(values, (list, tuple, _ArrayStub)):
+        if not values:
+            return (0,)
+        return (len(values),) + _shape(values[0])
+    return ()
+
+
+def _wrap_getitem(value, item):
+    if isinstance(item, slice) and not isinstance(value, _ArrayStub):
+        return _ArrayStub(value)
+    if isinstance(value, list) and not isinstance(value, _ArrayStub):
+        return _ArrayStub(value)
+    return value
+
+
+def _normalise(value):
+    if isinstance(value, _ArrayStub):
+        return value
+    if isinstance(value, (list, tuple)):
+        return _ArrayStub(_normalise(item) for item in value)
+    return value
+
+
+def _flatten(values):
+    if isinstance(values, (list, tuple, _ArrayStub)):
+        result = []
+        for item in values:
+            result.extend(_flatten(item))
+        return result
+    return [values]
+
+
+def _reshape(flat, shape):
+    if -1 in shape:
+        known = 1
+        unknown_count = 0
+        for size in shape:
+            if size == -1:
+                unknown_count += 1
+            else:
+                known *= size
+        if unknown_count != 1:
+            raise ValueError("can only specify one unknown dimension")
+        inferred = len(flat) // known
+        shape = tuple(inferred if size == -1 else size for size in shape)
+
+    total = 1
+    for size in shape:
+        total *= size
+    if total != len(flat):
+        raise ValueError("cannot reshape array")
+
+    def build(offset, dims):
+        if not dims:
+            return flat[offset], offset + 1
+        values = []
+        for _ in range(dims[0]):
+            value, offset = build(offset, dims[1:])
+            values.append(value)
+        return _ArrayStub(values), offset
+
+    result, _ = build(0, shape)
+    return result
 
 
 def _make_numpy_stub() -> types.ModuleType:
@@ -43,19 +138,95 @@ def _make_numpy_stub() -> types.ModuleType:
         if isinstance(value, _ArrayStub):
             return value
         if isinstance(value, (list, tuple)):
-            return _ArrayStub(value)
-        return value
+            return _ArrayStub(_normalise(item) for item in value)
+        return _ArrayStub([value])
 
-    def _mean(values, axis=None):
-        values = list(values)
-        if not values:
+    def _full(shape, fill_value, *args, **kwargs):
+        if isinstance(shape, int):
+            shape = (shape,)
+
+        def build(dims):
+            if not dims:
+                return fill_value
+            return _ArrayStub(build(dims[1:]) for _ in range(dims[0]))
+
+        return build(tuple(shape))
+
+    def _zeros(shape, *args, **kwargs):
+        return _full(shape, 0.0)
+
+    def _ones(shape, *args, **kwargs):
+        return _full(shape, 1.0)
+
+    def _concatenate(values, axis=0):
+        if axis != 0:
+            raise NotImplementedError("numpy stub only supports axis=0")
+        result = []
+        for value in values:
+            result.extend(list(_asarray(value)))
+        return _ArrayStub(result)
+
+    def _stack(values, axis=0):
+        if axis != 0:
+            raise NotImplementedError("numpy stub only supports axis=0")
+        return _ArrayStub(_asarray(value) for value in values)
+
+    def _mean(values, axis=None, keepdims=False, **kwargs):
+        values = _asarray(values)
+        flat = [float(item) for item in _flatten(values)]
+        if not flat:
             return _ArrayStub()
-        if axis == 0 and isinstance(values[0], (list, tuple, _ArrayStub)):
-            return _ArrayStub(
-                sum(float(item[index]) for item in values) / len(values)
-                for index in range(len(values[0]))
+        if axis is None:
+            return sum(flat) / len(flat)
+        if axis == 0:
+            rows = list(values)
+            if not rows or not isinstance(rows[0], (list, tuple, _ArrayStub)):
+                result = sum(float(item) for item in rows) / len(rows)
+            else:
+                result = _ArrayStub(
+                    sum(float(row[index]) for row in rows) / len(rows)
+                    for index in range(len(rows[0]))
+                )
+            return _ArrayStub([result]) if keepdims else result
+        if axis == 1:
+            result = _ArrayStub(
+                sum(float(item) for item in row) / len(row) for row in values
             )
-        return sum(float(item) for item in values) / len(values)
+            if keepdims:
+                return _ArrayStub(_ArrayStub([item]) for item in result)
+            return result
+        raise NotImplementedError("numpy stub only supports axis=None, 0, or 1")
+
+    def _squeeze(values, axis=None):
+        values = _asarray(values)
+        if axis is None:
+            while isinstance(values, _ArrayStub) and len(values) == 1:
+                values = values[0]
+            return values
+        if axis == 0 and isinstance(values, _ArrayStub) and len(values) == 1:
+            return values[0]
+        return values
+
+    def _map(values, fn):
+        if isinstance(values, _ArrayStub):
+            return _ArrayStub(_map(item, fn) for item in values)
+        if isinstance(values, (list, tuple)):
+            return _ArrayStub(_map(item, fn) for item in values)
+        return fn(values)
+
+    def _power(values, power):
+        return _map(values, lambda item: float(item) ** power)
+
+    def _sqrt(values):
+        import math
+
+        return _map(values, lambda item: math.sqrt(float(item)))
+
+    def _sort(values):
+        return _ArrayStub(sorted(float(item) for item in _flatten(_asarray(values))))
+
+    def _isscalar(value):
+        return not isinstance(value, (list, tuple, _ArrayStub))
 
     def _save(path, value):
         with open(path, "wb") as fh:
@@ -64,9 +235,21 @@ def _make_numpy_stub() -> types.ModuleType:
     return _make_stub(
         "numpy",
         ndarray=object,
+        array=_asarray,
         asarray=_asarray,
+        concatenate=_concatenate,
+        float32=float,
+        full=_full,
+        isscalar=_isscalar,
         mean=_mean,
+        ones=_ones,
+        power=_power,
         save=_save,
+        sort=_sort,
+        sqrt=_sqrt,
+        squeeze=_squeeze,
+        stack=_stack,
+        zeros=_zeros,
     )
 
 
@@ -178,14 +361,54 @@ def _ensure_stubs():
                 return decorator
 
         _fastapi.FastAPI = _FastAPI
-        _fastapi.HTTPException = Exception
+
+        class _APIRouter:
+            def __init__(self, *a, **kw):
+                pass
+
+            def get(self, path, **kw):
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def post(self, path, **kw):
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def put(self, path, **kw):
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def delete(self, path, **kw):
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+        class _HTTPException(Exception):
+            def __init__(self, status_code=None, detail=None):
+                super().__init__(detail)
+                self.status_code = status_code
+                self.detail = detail
+
+        def _Path(default=None, **kw):
+            return default
+
+        _fastapi.APIRouter = _APIRouter
+        _fastapi.HTTPException = _HTTPException
+        _fastapi.Path = _Path
         _fastapi.Request = object
 
         class _Form:
             def __class_getitem__(cls, item):
                 return item
 
-            def __call__(self, default=None):
+            def __call__(self, default=None, **kw):
                 return default
 
         class _File(_Form):
@@ -196,6 +419,7 @@ def _ensure_stubs():
 
         _fastapi.Form = _Form()
         _fastapi.File = _File()
+        _fastapi.Header = _Form()
         _fastapi.UploadFile = _UploadFile
 
         sys.modules["fastapi"] = _fastapi

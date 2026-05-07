@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+ARTIFACT_MANIFEST_VERSION = "artifact_manifest.v1"
+
 
 class AsyncUploadReader(Protocol):
     """Minimal async file interface used by UploadFile and test doubles."""
@@ -64,6 +66,49 @@ class PersistedTranscriptionArtifacts:
     embedding_paths: dict[str, Path]
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactManifestEntry:
+    """Public-safe artifact descriptor embedded in completed results.
+
+    This intentionally describes artifact names and roles without exposing
+    host-local paths. Clients may ignore the whole manifest.
+    """
+
+    name: str
+    filename: str
+    role: str
+    media_type: str
+    required_for_result: bool = False
+    speaker_label: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": self.name,
+            "filename": self.filename,
+            "role": self.role,
+            "media_type": self.media_type,
+            "required_for_result": self.required_for_result,
+        }
+        if self.speaker_label is not None:
+            payload["speaker_label"] = self.speaker_label
+        return payload
+
+
+def build_artifact_manifest(
+    stable: list[ArtifactManifestEntry],
+    optional: list[ArtifactManifestEntry] | None = None,
+    experimental: list[ArtifactManifestEntry] | None = None,
+) -> dict[str, Any]:
+    """Build the optional artifact manifest for a completed transcription."""
+
+    return {
+        "manifest_version": ARTIFACT_MANIFEST_VERSION,
+        "stable": [entry.as_dict() for entry in stable],
+        "optional": [entry.as_dict() for entry in optional or []],
+        "experimental": [entry.as_dict() for entry in experimental or []],
+    }
+
+
 @runtime_checkable
 class TranscriptionArtifactStore(Protocol):
     """Stable slot for persisting completed transcription artifacts."""
@@ -74,11 +119,14 @@ class TranscriptionArtifactStore(Protocol):
 
 
 __all__ = [
+    "ARTIFACT_MANIFEST_VERSION",
     "AsyncUploadReader",
     "AudioArtifactIndex",
+    "ArtifactManifestEntry",
     "PersistedTranscriptionArtifacts",
     "SavedUploadArtifact",
     "TranscriptionArtifactStore",
     "TranscriptionArtifactWriteRequest",
     "UploadPersistenceRequest",
+    "build_artifact_manifest",
 ]
