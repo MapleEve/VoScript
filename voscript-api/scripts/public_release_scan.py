@@ -73,7 +73,8 @@ INTERNAL_REFERENCE_RE = re.compile(
     rf"{NUMBERED_ADR_PATTERN}|"
     r"(?:CONTEXT(?:[-_]MAP)?|ROADMAP|ADRS?)\.(?:md|rst|html|txt)|"
     r"[\w.-]+\.local\.(?:md|rst|html)"
-    r")(?![\w.-])",
+    # A sentence-final period is punctuation, not a longer filename suffix.
+    r")(?![\w-]|\.[\w.-])",
     re.I,
 )
 

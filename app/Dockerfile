@@ -1,5 +1,5 @@
-# Python 3.11 preserves the cp311 Rust/DeepFilterLib wheel ABI. The official
-# PyTorch 2.10 CUDA image uses Python 3.12, so install official cu126 wheels here.
+# Python 3.11 preserves the cp311 Rust/DeepFilterLib wheel ABI.
+# Install official CUDA 12.6 wheels without changing the Python/native-wheel ABI.
 # Official Docker Hub index digest (Python 3.11.17, Debian bookworm):
 # https://hub.docker.com/layers/library/python/3.11.17-slim-bookworm/images/sha256-8a00ecb83ed9d0864dfd102a1bdb2067fda907ceb30bb86d09da9ee558b19590
 FROM python:3.11.17-slim-bookworm@sha256:f06d01d4ba3f8ad5af45a3ec87df19c1d317d8e8961edc0fabda61811af6f7cf
@@ -54,10 +54,11 @@ RUN set -eu; \
     if [ -n "$PIP_INDEX_URL" ]; then export PIP_INDEX_URL; fi; \
     python -m pip install --no-cache-dir --upgrade pip==26.3 setuptools==84.2.1; \
     python -m pip install --no-cache-dir numpy Pillow
-# Torch stays outside business requirements. These exact published cu126 builds
-# meet the GHSA-63cw-57p8-fm3p fix floor, not an assertion of zero vulnerabilities.
+# Torch stays outside business requirements. The published cu126 builds preserve
+# CTranslate2's CUDA12/cuDNN9 ABI and meet GHSA-rrmf-rvhw-rf47's 2.13.0 fix floor.
+# https://pytorch.org/get-started/previous-versions/#v2130
 RUN python -m pip install --no-cache-dir \
-    torch==2.10.0+cu126 torchaudio==2.10.0+cu126 torchvision==0.25.0+cu126 \
+    torch==2.13.0+cu126 torchaudio==2.11.0+cu126 torchvision==0.28.0+cu126 \
     --index-url https://download.pytorch.org/whl/cu126
 RUN set -eu; \
     if [ -n "$PIP_INDEX_URL" ]; then export PIP_INDEX_URL; fi; \

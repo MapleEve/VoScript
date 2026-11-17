@@ -98,13 +98,29 @@ def test_unique_upload_rejection_leaves_no_new_runtime_or_files(
         monkeypatch.setattr(context.router, name, 1)
         assert _submit(context, b"first synthetic upload").status_code == 200
     before = context.runtime.admission_counts()
+    before_jobs = dict(context.router.jobs)
+    before_hashes = dict(context.runtime._in_flight_hashes)
+    before_active = set(context.runtime._active_job_ids)
+    before_started = list(context.started)
     before_uploads = set(context.router.UPLOADS_DIR.iterdir())
     before_records = set(context.router.TRANSCRIPTIONS_DIR.iterdir())
+    index_lock = context.router.TRANSCRIPTIONS_DIR / "hash_index.json.lock"
+    lock_inode = index_lock.stat().st_ino if index_lock.exists() else None
     response = _submit(context, b"second synthetic upload")
     assert response.status_code == 503
     assert context.runtime.admission_counts() == before
+    assert dict(context.router.jobs) == before_jobs
+    assert context.runtime._in_flight_hashes == before_hashes
+    assert context.runtime._active_job_ids == before_active
+    assert context.started == before_started
     assert set(context.router.UPLOADS_DIR.iterdir()) == before_uploads
-    assert set(context.router.TRANSCRIPTIONS_DIR.iterdir()) == before_records
+    # Hash lookup keeps this flock inode after release; it is not a job artifact.
+    assert set(context.router.TRANSCRIPTIONS_DIR.iterdir()) == before_records | {
+        index_lock
+    }
+    assert index_lock.is_file()
+    if lock_inode is not None:
+        assert index_lock.stat().st_ino == lock_inode
 
 
 @pytest.mark.parametrize("mode", ["false", "raise", "cache", "upload", "lookup"])

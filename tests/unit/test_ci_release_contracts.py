@@ -449,7 +449,7 @@ def test_python_variable_forwarding_is_not_a_credential_literal(tmp_path):
 def test_fast_audio_tests_use_real_cpu_runtime_and_reject_skips():
     job = workflow("ci.yml")["jobs"]["test"]
     assert "https://download.pytorch.org/whl/cpu" in str(job)
-    assert "torch==2.10.0 torchaudio==2.10.0" in str(job)
+    assert "torch==2.13.0 torchaudio==2.11.0" in str(job)
     assert "-p ci_real_audio" in str(job)
     assert (
         "PYTHONPATH=app python -m coverage run --append --source=app tests/compat/test_security_audio_io.py"
@@ -540,15 +540,20 @@ def test_exact_public_container_paths_remain_allowed(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "marker",
+    "marker, marker_categories",
     [
-        "/" + "Users/example/private.txt",
-        "road" + "map/private.md",
-        "private" + " corpus",
-        "~/." + "ssh/config",
+        ("/" + "Users/example/private.txt", {"machine-local path"}),
+        (
+            "road" + "map/private.md",
+            {"internal document reference", "local-only directory reference"},
+        ),
+        ("private" + " corpus", {"private validation corpus name"}),
+        ("~/." + "ssh/config", {"local ssh" + " config path"}),
     ],
 )
-def test_every_diagnostic_redacts_the_entire_source_line(tmp_path, marker):
+def test_every_diagnostic_redacts_the_entire_source_line(
+    tmp_path, marker, marker_categories
+):
     secret = "sk-live-" + "syntheticcredentialvalue123456789"
     content = "API_KEY=" + secret + " " + marker
     result = scan_fixture(tmp_path, Path("README.md"), content)
@@ -559,8 +564,62 @@ def test_every_diagnostic_redacts_the_entire_source_line(tmp_path, marker):
     assert content not in output
     assert scanner.REDACTED_EXCERPT in output
     findings = scanner.line_findings(tmp_path, [Path("README.md")])
-    assert len(findings) >= 3
+    required_categories = {"secret-looking assignment"} | marker_categories
+    assert required_categories <= {finding.category for finding in findings}
+    assert all(category in output for category in required_categories)
     assert all(finding.excerpt == scanner.REDACTED_EXCERPT for finding in findings)
+    assert all(
+        finding.path == "README.md" and finding.line == 1 for finding in findings
+    )
+    assert all(
+        secret not in repr(finding) and marker not in repr(finding)
+        for finding in findings
+    )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "AGENTS" + ".local.md",
+        "CLAUDE" + ".local.md",
+        "docs/release" + ".local.md",
+        "CONT" + "EXT.md",
+        "ROAD" + "MAP.md",
+        "ADR" + "0012-design.md",
+    ],
+)
+@pytest.mark.parametrize("form", ["prose", "inline", "link", "html", "url", "entity"])
+def test_internal_document_references_allow_sentence_punctuation(
+    tmp_path, filename, form
+):
+    references = {
+        "prose": f"Read {filename}.",
+        "inline": f"Read `{filename}`.",
+        "link": f"[details]({filename}).",
+        "html": f'<a href="{filename}">details</a>.',
+        "url": "Read " + filename.replace(".", "%2E") + ".",
+        "entity": "Read " + filename.replace(".", "&#46;") + ".",
+    }
+    content = references[form]
+    result = scan_fixture(tmp_path, Path("README.md"), content)
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "internal document reference" in output
+    assert scanner.REDACTED_EXCERPT in output
+    assert filename not in output
+    assert content not in output
+    findings = scanner.line_findings(tmp_path, [Path("README.md")])
+    assert any(
+        finding.category == "internal document reference" for finding in findings
+    )
+    assert all(finding.excerpt == scanner.REDACTED_EXCERPT for finding in findings)
+
+
+@pytest.mark.parametrize("suffix", [".example", "-template", "x"])
+def test_local_override_reference_does_not_match_a_longer_filename(tmp_path, suffix):
+    filename = "AGENTS" + ".local.md" + suffix
+    result = scan_fixture(tmp_path, Path("README.md"), f"Read {filename}.")
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_diagnostic_paths_cannot_echo_a_credential_in_a_tracked_filename(tmp_path):

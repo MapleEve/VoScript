@@ -10,8 +10,9 @@
 
 ### 安全
 
-- 更新运行时依赖约束，采用 PyTorch 2.10.0 / CUDA 12.6 兼容线，并升级
-  Transformers、Hugging Face Hub、requests、urllib3 和 Pillow 等依赖。
+- 更新运行时依赖约束，采用官方 PyTorch 2.13.0、torchaudio 2.11.0 和
+  torchvision 0.28.0 的 CUDA 12.6 wheel，并升级 Transformers、Hugging Face Hub、
+  requests、urllib3 和 Pillow 等依赖。
   音频文件 I/O 与旧版 pyannote 下载参数使用局部兼容适配，不全局替换第三方模块；
   依赖升级不代表所有传递依赖已无已知漏洞。
 - 原始音频下载只接受上传目录内的单个 basename，并校验解析后的路径，拒绝目录穿越、

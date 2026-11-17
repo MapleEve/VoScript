@@ -52,7 +52,8 @@ jobs:
       - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0, node24
         with:
           python-version: "3.11"
-      - run: pip install ruff
+      - run: python -m pip install ruff==0.17.5
+      - run: ruff --version
       - run: ruff check app/ voscript-api/scripts/ --ignore E501
       - run: ruff format --check app/ voscript-api/scripts/
 
@@ -66,7 +67,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install real CPU-only Torch for audio-I/O regressions
-        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0 torchaudio==2.10.0
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0 torchaudio==2.11.0
       - name: Install test dependencies (no GPU packages)
         run: pip install pytest pytest-cov coverage fastapi httpx numpy aiofiles starlette python-multipart pyyaml "soundfile>=0.13,<0.14"
       - name: Initialize combined coverage data

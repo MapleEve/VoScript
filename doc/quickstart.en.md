@@ -201,9 +201,10 @@ as env yet, and AS-norm cohort preservation semantics, see
 
 Chinese word-level alignment is attempted by default and runs on CPU by
 default to keep wav2vec2 alignment isolated from GPU ASR / speaker-embedding
-runtimes. The Docker image uses Python 3.11 and PyTorch 2.10.0 CUDA 12.6
-wheels for native-extension compatibility and safe loading of the default
-Chinese `.bin` alignment weights. Custom images should retain the current
+runtimes. The Dockerfile selects Python 3.11 and official CUDA 12.6 wheels
+using the [runtime constraints](../app/requirements.docker.constraints.txt),
+including the checkpoint-loading safety floor required by the default Chinese
+`.bin` alignment weights. Custom images should retain the current
 dependency constraints, or use a trusted replacement alignment model providing
 safetensors; do not disable checkpoint safety checks. Only set
 `WHISPERX_ALIGN_DISABLED_LANGUAGES=zh` if you intentionally want a temporary

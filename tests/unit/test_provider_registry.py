@@ -1117,7 +1117,7 @@ def test_default_embedding_provider_uses_selected_device_after_first_lazy_load(
             return FakeTensor(1, self.shape[1])
 
         def to(self, device):
-            calls.append(("chunk_to", device, self.shape[1]))
+            calls.append(("chunk_to", str(device), self.shape[1]))
             return self
 
     class FakeInfo:
@@ -1130,7 +1130,7 @@ def test_default_embedding_provider_uses_selected_device_after_first_lazy_load(
             return cls()
 
         def to(self, device):
-            calls.append(("model_to", device))
+            calls.append(("model_to", str(device)))
             return self
 
     class FakeInference:

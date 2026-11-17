@@ -7,10 +7,12 @@ import soundfile
 import torch
 import torchaudio
 
-if torch.__version__.split("+")[0] != "2.10.0":
-    raise RuntimeError("CI requires the actual Torch 2.10.0 runtime, not a test stub")
-if torchaudio.__version__.split("+")[0] != "2.10.0":
-    raise RuntimeError("CI requires the matching actual torchaudio runtime")
+if torch.__version__.split("+")[0] != "2.13.0":
+    raise RuntimeError("CI requires the actual Torch 2.13.0 runtime, not a test stub")
+if torchaudio.__version__.split("+")[0] != "2.11.0":
+    raise RuntimeError(
+        "CI requires the actual TorchAudio 2.11.0 runtime, not a test stub"
+    )
 if os.environ.get("CI_REQUIRE_CPU_WHEEL") == "1" and torch.version.cuda is not None:
     raise RuntimeError("Fast CI must use the official CPU-only Torch wheel")
 if not numpy.__version__ or not soundfile.__version__:

@@ -1,5 +1,5 @@
 # CUDA local-version pins belong only to the Linux CUDA image, not native macOS.
 -c requirements.constraints.txt
-torch==2.10.0+cu126
-torchaudio==2.10.0+cu126
-torchvision==0.25.0+cu126
+torch==2.13.0+cu126
+torchaudio==2.11.0+cu126
+torchvision==0.28.0+cu126

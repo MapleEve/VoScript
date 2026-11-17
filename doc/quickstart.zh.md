@@ -172,8 +172,9 @@ HF_ENDPOINT=https://hf-mirror.com
 
 中文词级 alignment 默认会尝试执行，并默认在 CPU 上运行，以避免 wav2vec2
 alignment 与 GPU ASR / speaker embedding 运行时互相影响。Docker 镜像使用
-Python 3.11 与 PyTorch 2.10.0 的 CUDA 12.6 wheel，兼顾原生扩展兼容性与
-默认中文 `.bin` alignment 权重的安全加载要求。自定义镜像应保持当前依赖约束，
+Python 3.11 与[运行时约束](../app/requirements.docker.constraints.txt)中指定的官方
+CUDA 12.6 wheel，保留默认中文 `.bin` alignment 权重所需的 checkpoint 安全加载
+版本下限。自定义镜像应保持当前依赖约束，
 或使用提供 safetensors 的可信替代 alignment 模型，不要关闭 checkpoint 安全检查；
 只有确认要临时降级到段级时间戳时，
 才设置 `WHISPERX_ALIGN_DISABLED_LANGUAGES=zh`。

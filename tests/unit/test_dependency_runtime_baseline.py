@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 
@@ -35,8 +36,25 @@ def test_docker_installs_whisperx_without_replacing_asr_runtime_stack():
     assert not any(line.startswith("nltk") for line in lines)
     assert (root / "app" / "nltk" / "tokenize" / "punkt.py").exists()
     assert "whisperx==3.3.1" not in lines
-    assert (
-        'pip install --no-cache-dir -i "$PIP_INDEX_URL" --no-deps whisperx==3.3.1'
-        in dockerfile
+    instructions = dockerfile.replace("\\\n", " ").splitlines()
+    installs = [
+        instruction
+        for instruction in instructions
+        if instruction.startswith("RUN ") and "whisperx==3.3.1" in instruction
+    ]
+    assert len(installs) == 1
+    install = installs[0]
+    commands = [shlex.split(command.strip()) for command in install.split(";")]
+    whisperx = next(command for command in commands if "whisperx==3.3.1" in command)
+    assert whisperx[:4] == ["python", "-m", "pip", "install"]
+    assert "--no-cache-dir" in whisperx
+    assert "--no-deps" in whisperx
+    assert not any(
+        token.startswith("whisperx") and token != "whisperx==3.3.1"
+        for token in whisperx
     )
-    assert "pip install --no-cache-dir --no-deps whisperx==3.3.1" in dockerfile
+    # ARG is shell-local unless exported; require export in the very same RUN,
+    # before the install, rather than an obsolete pip command's literal spelling.
+    assert 'ARG PIP_INDEX_URL=""' in dockerfile
+    assert 'if [ -n "$PIP_INDEX_URL" ]; then export PIP_INDEX_URL; fi;' in install
+    assert install.index("export PIP_INDEX_URL") < install.index("whisperx==3.3.1")

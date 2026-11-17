@@ -11,8 +11,9 @@ are not implied.
 
 ### Security
 
-- Updated runtime dependency constraints to the PyTorch 2.10.0 / CUDA 12.6
-  compatibility line and upgraded Transformers, Hugging Face Hub, requests,
+- Updated runtime dependency constraints to official PyTorch 2.13.0,
+  torchaudio 2.11.0, and torchvision 0.28.0 CUDA 12.6 wheels, and upgraded
+  Transformers, Hugging Face Hub, requests,
   urllib3, Pillow, and related dependencies. Audio file I/O and legacy pyannote
   download arguments use scoped compatibility adapters rather than globally
   replacing third-party modules. Upgrades do not imply all transitive

@@ -1,9 +1,12 @@
 # Platform-neutral compatibility constraints; Docker adds its cu126 local pins.
 # These compatibility constraints are not a complete transitive lock or a claim
 # that every package is free of known vulnerabilities. CI audits the built image.
-torch==2.10.0
-torchaudio==2.10.0
-torchvision==0.25.0
+torch==2.13.0
+# TorchAudio 2.11.0 uses the stable ABI for torch>=2.11. Docker must use cu126,
+# not the default PyPI wheel's CUDA runtime.
+# https://docs.pytorch.org/audio/main/installation.html#compatibility-matrix
+torchaudio==2.11.0
+torchvision==0.28.0
 numpy==1.26.4
 scipy==1.11.4
 soundfile==0.13.1

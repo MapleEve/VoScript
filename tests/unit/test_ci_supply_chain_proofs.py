@@ -309,9 +309,9 @@ def cuda_inventory():
     return [
         {"name": name, "version": installed}
         for name, installed in [
-            ("torch", "2.10.0+cu126"),
-            ("torchaudio", "2.10.0+cu126"),
-            ("torchvision", "0.25.0+cu126"),
+            ("torch", "2.13.0+cu126"),
+            ("torchaudio", "2.11.0+cu126"),
+            ("torchvision", "0.28.0+cu126"),
             ("whisperx", "3.3.1"),
             ("voscript_core", "0.8.5"),
         ]
@@ -325,13 +325,13 @@ def test_cuda_advisory_aliases_are_exact_and_raw_inventory_is_not_mutated(
     monkeypatch.setattr(images, "ROOT", tmp_path)
     raw = cuda_inventory()
     expected, mappings = images.normalize_inventory(raw, "0.8.5")
-    assert raw[0]["version"] == "2.10.0+cu126"
-    assert expected["torch"] == "2.10.0"
-    assert expected["torchaudio"] == "2.10.0"
-    assert expected["torchvision"] == "0.25.0"
+    assert raw[0]["version"] == "2.13.0+cu126"
+    assert expected["torch"] == "2.13.0"
+    assert expected["torchaudio"] == "2.11.0"
+    assert expected["torchvision"] == "0.28.0"
     assert len(mappings) == 4
     assert "voscript-core" not in expected
-    raw[0]["version"] = "2.10.0+unexplained"
+    raw[0]["version"] = "2.13.0+unexplained"
     with pytest.raises(ValueError, match="Unexplained local-version"):
         images.normalize_inventory(raw, "0.8.5")
 
@@ -340,7 +340,7 @@ def test_cuda_advisory_aliases_are_exact_and_raw_inventory_is_not_mutated(
     "attack", ["skip", "missing", "wrong-version", "advisory", "nonzero"]
 )
 def test_image_audit_rejects_unexplained_skips_and_incomplete_results(attack):
-    expected = {"torch": "2.10.0", "whisperx": "3.3.1"}
+    expected = {"torch": "2.13.0", "whisperx": "3.3.1"}
     report = {
         "dependencies": [
             {"name": name, "version": release, "vulns": []}
@@ -367,8 +367,8 @@ def test_image_audit_rejects_unexplained_skips_and_incomplete_results(attack):
 
 def test_strict_mapped_image_audit_accepts_complete_clean_report():
     images.validate_audit_report(
-        {"dependencies": [{"name": "torch", "version": "2.10.0", "vulns": []}]},
-        {"torch": "2.10.0"},
+        {"dependencies": [{"name": "torch", "version": "2.13.0", "vulns": []}]},
+        {"torch": "2.13.0"},
         0,
     )
 
@@ -399,6 +399,6 @@ def test_audit_preserves_raw_cuda_inventory_and_the_actual_service_report(
     images.audit("sha256:synthetic-image")
     evidence = tmp_path / "voscript-image-audit"
     assert json.loads((evidence / "raw-inventory.json").read_text()) == raw
-    assert "torch==2.10.0\n" in (evidence / "audit-inventory.txt").read_text()
+    assert "torch==2.13.0\n" in (evidence / "audit-inventory.txt").read_text()
     assert json.loads((evidence / "pip-audit.json").read_text())["dependencies"]
     assert len(json.loads((evidence / "audit-mappings.json").read_text())) == 4

@@ -112,8 +112,15 @@ def sha256(content: bytes) -> str:
 
 
 def adapt_source(original: bytes, replacements, member: str) -> bytes:
-    source = original.decode("utf-8")
-    if source.startswith("\ufeff") or "\r" in source:
+    # Authentication compares the original bytes, never a normalized surrogate.
+    # Preserve a known wheel's BOM and uniform newlines in the patched payload.
+    bom = b"\xef\xbb\xbf" if original.startswith(b"\xef\xbb\xbf") else b""
+    source = original[len(bom) :].decode("utf-8")
+    newline = "\r\n" if "\r\n" in source else "\n"
+    source = source.replace("\r\n", "\n")
+    if "\r" in source or (
+        newline == "\r\n" and source.count("\n") != original.count(b"\r\n")
+    ):
         raise ValueError(f"Unexpected source encoding/newlines: {member}")
     ast.parse(source, filename=member)
     for old, new, count in replacements:
@@ -121,7 +128,7 @@ def adapt_source(original: bytes, replacements, member: str) -> bytes:
             raise ValueError(f"Unknown upstream import/call structure: {member}")
         source = source.replace(old, new)
     ast.parse(source, filename=member)
-    return source.encode("utf-8")
+    return bom + source.replace("\n", newline).encode("utf-8")
 
 
 def checked_wheel(wheel_dir: Path, package: str, spec: dict) -> Path:

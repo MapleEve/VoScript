@@ -148,8 +148,8 @@ import whisperx
 from transformers import Wav2Vec2Config, Wav2Vec2ForCTC
 from pipeline.orchestrator import _trusted_pyannote_checkpoint_context
 from torch.torch_version import TorchVersion
-assert torch.__version__.split('+')[0] == '2.10.0'
-assert torchaudio.__version__.split('+')[0] == '2.10.0'
+assert torch.__version__.split('+')[0] == '2.13.0'
+assert torchaudio.__version__.split('+')[0] == '2.11.0'
 assert callable(whisperx.load_align_model)
 assert callable(init_df) and callable(enhance)
 assert callable(Pipeline.from_pretrained) and callable(Model.from_pretrained)
@@ -185,9 +185,9 @@ print(json.dumps([{'name': dist.metadata['Name'], 'version': dist.version}
 # Exact official CUDA wheel build aliases, not vulnerability ignores or a generic
 # local-version stripper. Advisory matching uses the same upstream release.
 CUDA_UPSTREAM = {
-    ("torch", "2.10.0+cu126"): "2.10.0",
-    ("torchaudio", "2.10.0+cu126"): "2.10.0",
-    ("torchvision", "0.25.0+cu126"): "0.25.0",
+    ("torch", "2.13.0+cu126"): "2.13.0",
+    ("torchaudio", "2.11.0+cu126"): "2.11.0",
+    ("torchvision", "0.28.0+cu126"): "0.28.0",
 }
 
 

@@ -96,12 +96,12 @@ def test_patch_rejects_unknown_source_structure_and_invalid_python():
         patcher.adapt_source(b"import different_audio\n", replacements, "synthetic.py")
     with pytest.raises(SyntaxError):
         patcher.adapt_source(b"not valid python !!!\n", replacements, "synthetic.py")
-    with pytest.raises(ValueError, match="encoding/newlines"):
-        patcher.adapt_source(b"import torchaudio\r\n", replacements, "synthetic.py")
+    for malformed in (b"import torchaudio\r", b"import torchaudio\r\npass\n"):
+        with pytest.raises(ValueError, match="encoding/newlines"):
+            patcher.adapt_source(malformed, replacements, "synthetic.py")
 
 
-def _synthetic_install(tmp_path, monkeypatch):
-    original = b"import torchaudio\n"
+def _synthetic_install(tmp_path, monkeypatch, original=b"import torchaudio\n"):
     member = "synthetic/io.py"
     wheel_name = "synthetic-0.0.1-py3-none-any.whl"
     wheel_bytes = io.BytesIO()
@@ -133,6 +133,35 @@ def _synthetic_install(tmp_path, monkeypatch):
         patcher.sysconfig, "get_paths", lambda: {"purelib": str(tmp_path)}
     )
     return target, installed, package_spec
+
+
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_authenticated_patch_preserves_bom_and_uniform_newlines(
+    tmp_path, monkeypatch, bom, newline
+):
+    original = bom + b"import torchaudio" + newline + b"pass" + newline
+    target, _, _ = _synthetic_install(tmp_path, monkeypatch, original)
+    plan, report = patcher.plan_patches(tmp_path)
+    patched = (
+        bom
+        + b"from infra.audio import io_compat as torchaudio"
+        + newline
+        + b"pass"
+        + newline
+    )
+    assert plan == [(target, patched)]
+    assert target.read_bytes() == original
+    assert report[0]["original_sha256"] == patcher.sha256(original)
+    assert report[0]["patched_sha256"] == patcher.sha256(patched)
+    target.write_bytes(patched)
+    assert patcher.plan_patches(tmp_path)[0] == plan
+
+    # Even harmless newline/BOM changes to installed bytes must not bypass the
+    # authenticated wheel comparison, before or after patching.
+    target.write_bytes(original + newline)
+    with pytest.raises(ValueError, match="Installed source differs"):
+        patcher.plan_patches(tmp_path)
 
 
 def test_patch_plan_authenticates_wheel_and_installed_source_before_writes(
