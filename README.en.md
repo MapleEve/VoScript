@@ -54,7 +54,7 @@ VoScript fixes that. **Enroll a voice once, and every future recording automatic
 ```bash
 git clone https://github.com/MapleEve/voscript.git && cd voscript
 cp .env.example .env   # fill in HF_TOKEN and API_KEY
-docker compose up -d --build
+docker compose up -d
 ```
 
 Open `http://localhost:8780` in a browser, upload a recording, wait for results.
@@ -65,6 +65,12 @@ The default configuration targets clean meeting-recorder audio: denoising is off
 GPU models unload after 3 idle minutes, and multi-GPU hosts expose all NVIDIA
 GPUs by default so each model reload can choose the visible device with the most
 free memory.
+
+Compose defaults to a published image containing the Rust wheel, with no local
+compilation needed. `RUST_KERNEL_MODE=required` is the default: selected Rust
+paths fail closed instead of silently falling back. Before upgrading, back up
+and preserve the data directory, model cache, and AS-norm cohort. For source
+builds, see the [quickstart](./doc/quickstart.en.md#3-start-the-service).
 
 To tune denoising, voiceprint thresholds, GPU visibility, or model residency:
 
@@ -129,12 +135,6 @@ cohort size below 10, scoring falls back to raw cosine. Measured on an internal
 benchmark set: recall 50% → 70%, zero false positives.
 
 Full technical details → [`doc/benchmarks.en.md`](./doc/benchmarks.en.md)
-
----
-
-## 1.0 and what comes next
-
-Long-term vision: VoScript will keep making self-hosted transcription and voice identification reliable for real meeting and recording workflows.
 
 ---
 

@@ -11,45 +11,63 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from config import JOBS_MAX_CACHE, MODEL_IDLE_TIMEOUT_SEC
+from pipeline.contracts import TERMINAL_JOB_STATUSES
 
 _MISSING = object()
 _T = TypeVar("_T")
 
 
 class _LRUJobsDict:
-    """Thread-safe LRU dict for job states with bounded size."""
+    """Keep active jobs pinned and bound only the terminal history cache."""
 
     def __init__(self, maxsize: int = 200):
         self._d: OrderedDict = OrderedDict()
+        self._active: dict = {}
         self._lock = threading.Lock()
         self._maxsize = maxsize
 
     def __setitem__(self, key, value):
         with self._lock:
-            if key in self._d:
-                self._d.move_to_end(key)
-            self._d[key] = value
-            if len(self._d) > self._maxsize:
+            # Legacy callers may still mutate a returned state in place.
+            for active_key, state in list(self._active.items()):
+                if state.get("status") in TERMINAL_JOB_STATUSES:
+                    self._d[active_key] = self._active.pop(active_key)
+            self._active.pop(key, None)
+            self._d.pop(key, None)
+            if value.get("status") in TERMINAL_JOB_STATUSES:
+                self._d[key] = value
+            else:
+                self._active[key] = value
+            while len(self._d) > max(self._maxsize, 0):
                 self._d.popitem(last=False)
 
     def __getitem__(self, key):
         with self._lock:
+            if key in self._active:
+                return self._active[key]
             return self._d[key]
 
     def __contains__(self, key):
         with self._lock:
-            return key in self._d
+            return key in self._active or key in self._d
 
     def __delitem__(self, key):
         with self._lock:
-            del self._d[key]
+            if key in self._active:
+                del self._active[key]
+            else:
+                del self._d[key]
 
     def get(self, key, default=None):
         with self._lock:
+            if key in self._active:
+                return self._active[key]
             return self._d.get(key, default)
 
     def pop(self, key, default=_MISSING):
         with self._lock:
+            if key in self._active:
+                return self._active.pop(key)
             if default is _MISSING:
                 return self._d.pop(key)
             return self._d.pop(key, default)
@@ -67,6 +85,15 @@ _last_gpu_job_finished_at: float | None = None
 # both burning GPU. Cleared when the job reaches a terminal state.
 _in_flight_hashes: dict[str, str] = {}
 _in_flight_lock = threading.Lock()
+_active_job_ids: set[str] = set()
+
+
+class JobAdmissionError(RuntimeError):
+    """A new unique job would exceed an atomic runtime budget."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -262,12 +289,58 @@ def unregister_in_flight(file_hash: str, job_id: str | None = None) -> bool:
         return True
 
 
+def admit_job(
+    file_hash: str | None,
+    job_id: str,
+    *,
+    max_active_jobs: int,
+    max_in_flight_jobs: int,
+    prepare: Callable[[], None],
+) -> str | None:
+    """Deduplicate, check budgets and publish durable ownership atomically.
+
+    ``prepare`` persists the queued record before another request can see its
+    hash. It must not call runtime reservation helpers while this lock is held.
+    """
+
+    with _in_flight_lock:
+        if file_hash and file_hash in _in_flight_hashes:
+            return _in_flight_hashes[file_hash]
+        if max_active_jobs > 0 and len(_active_job_ids) >= max_active_jobs:
+            raise JobAdmissionError("active_job_budget_exceeded")
+        if (
+            file_hash
+            and max_in_flight_jobs > 0
+            and len(_in_flight_hashes) >= max_in_flight_jobs
+        ):
+            raise JobAdmissionError("in_flight_job_budget_exceeded")
+        prepare()
+        _active_job_ids.add(job_id)
+        if file_hash:
+            _in_flight_hashes[file_hash] = job_id
+        return None
+
+
+def release_active_job(job_id: str) -> None:
+    with _in_flight_lock:
+        _active_job_ids.discard(job_id)
+
+
+def admission_counts() -> tuple[int, int]:
+    with _in_flight_lock:
+        return len(_active_job_ids), len(_in_flight_hashes)
+
+
 __all__ = [
+    "JobAdmissionError",
     "_LRUJobsDict",
+    "admission_counts",
+    "admit_job",
     "flush_torch_cuda_cache",
     "jobs",
     "record_gpu_job_finished",
     "register_in_flight",
+    "release_active_job",
     "run_serialized_gpu_work",
     "start_idle_model_unload_daemon",
     "unload_idle_pipeline_if_due",

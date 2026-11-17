@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
@@ -208,3 +210,116 @@ def test_idle_unload_rechecks_idle_after_waiting_for_gpu_semaphore(monkeypatch):
     assert unloaded is False
     assert pipeline.unload_calls == 0
     assert semaphore.released is True
+
+
+@pytest.mark.parametrize("cache_size, active_count", [(200, 201), (1, 2), (0, 2)])
+def test_active_jobs_are_not_evicted_by_history_limit(cache_size, active_count):
+    cache = job_runtime._LRUJobsDict(maxsize=cache_size)
+    for index in range(active_count):
+        cache[str(index)] = {"status": "queued"}
+    cache["history"] = {"status": "completed", "result": {}}
+
+    for index in range(active_count):
+        assert cache[str(index)]["status"] == "queued"
+        cache[str(index)] = {"status": "transcribing"}
+    if cache_size == 0:
+        assert cache.get("history") is None
+    else:
+        assert "history" in cache
+
+
+def test_terminal_history_is_bounded_without_evicting_active_job():
+    cache = job_runtime._LRUJobsDict(maxsize=1)
+    cache["active"] = {"status": "queued"}
+    cache["first"] = {"status": "completed", "result": {}}
+    cache["second"] = {"status": "failed", "error": "synthetic failure"}
+
+    assert "active" in cache
+    assert "first" not in cache
+    assert cache["second"]["status"] == "failed"
+    cache["active"] = {"status": "completed", "result": {}}
+    assert "second" not in cache
+    assert cache.pop("active")["status"] == "completed"
+    assert cache.pop("missing", None) is None
+    with pytest.raises(KeyError):
+        cache.pop("missing")
+
+
+def test_legacy_in_place_terminal_update_enters_bounded_history():
+    cache = job_runtime._LRUJobsDict(maxsize=1)
+    cache["first"] = {"status": "queued"}
+    cache["first"]["status"] = "failed"
+    cache["second"] = {"status": "completed"}
+    assert "first" not in cache
+
+
+def test_admission_atomically_limits_concurrent_unique_hashes(monkeypatch):
+    monkeypatch.setattr(job_runtime, "_in_flight_hashes", {})
+    monkeypatch.setattr(job_runtime, "_active_job_ids", set())
+    barrier = Barrier(8)
+    prepared = []
+
+    def submit(index):
+        barrier.wait(timeout=10)
+        try:
+            job_runtime.admit_job(
+                f"hash-{index}",
+                f"job-{index}",
+                max_active_jobs=200,
+                max_in_flight_jobs=4,
+                prepare=lambda: prepared.append(index),
+            )
+            return True
+        except job_runtime.JobAdmissionError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(submit, range(8)))
+    assert sum(outcomes) == 4
+    assert len(prepared) == 4
+    assert job_runtime.admission_counts() == (4, 4)
+
+
+def test_admission_same_hash_has_one_durable_owner_at_capacity(monkeypatch):
+    monkeypatch.setattr(job_runtime, "_in_flight_hashes", {})
+    monkeypatch.setattr(job_runtime, "_active_job_ids", set())
+    barrier = Barrier(8)
+    prepared = []
+
+    def submit(index):
+        barrier.wait(timeout=10)
+        job_id = f"job-{index}"
+        existing = job_runtime.admit_job(
+            "same-hash",
+            job_id,
+            max_active_jobs=1,
+            max_in_flight_jobs=1,
+            prepare=lambda: prepared.append(job_id),
+        )
+        return existing or job_id
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        owners = list(pool.map(submit, range(8)))
+    assert len(prepared) == 1
+    assert set(owners) == set(prepared)
+    assert job_runtime.admission_counts() == (1, 1)
+
+
+def test_failed_prepare_does_not_publish_hash_or_consume_capacity(monkeypatch):
+    monkeypatch.setattr(job_runtime, "_in_flight_hashes", {})
+    monkeypatch.setattr(job_runtime, "_active_job_ids", set())
+
+    def fail():
+        raise OSError("synthetic persistence error")
+
+    with pytest.raises(OSError, match="synthetic persistence error"):
+        job_runtime.admit_job(
+            "hash", "job", max_active_jobs=1, max_in_flight_jobs=1, prepare=fail
+        )
+    assert job_runtime.admission_counts() == (0, 0)
+
+
+def test_stale_worker_cannot_release_new_hash_owner(monkeypatch):
+    monkeypatch.setattr(job_runtime, "_in_flight_hashes", {"hash": "new-job"})
+    assert job_runtime.unregister_in_flight("hash", "old-job") is False
+    assert job_runtime.register_in_flight("hash", "retry") == "new-job"

@@ -2,7 +2,7 @@
 
 [简体中文](./configuration.zh.md) | **English**
 
-This is the public configuration index for VoScript v0.8.4. It covers the
+This is the public configuration index for VoScript v0.8.5. It covers the
 environment variables that the current code reads, the per-request override
 semantics of `POST /api/transcribe`, and internal defaults that are documented
 for operators but are not stable public knobs yet. Do not assume a Whisper,
@@ -14,7 +14,7 @@ diarization, or AS-norm env var exists unless it is listed here.
 | --- | --- | --- |
 | API request field | `denoise_model=deepfilternet`, `snr_threshold=8` | Per-job only, wins over service env |
 | Container environment | `.env` injected through `docker-compose.yml` | Service-level default |
-| Code default | `app/config.py` | Fallback when env is empty or invalid |
+| Code default | `app/config.py` | Used when env is unset; empty or invalid values are handled per setting |
 
 `POST /api/transcribe` currently exposes only `language`, `min_speakers`,
 `max_speakers`, `denoise_model`, `snr_threshold`, and `no_repeat_ngram_size`.
@@ -29,6 +29,7 @@ parameters yet.
 | `ALLOW_NO_AUTH` | `0` | Used only when `API_KEY` is empty. `1` acknowledges unauthenticated mode and suppresses the startup warning; it does not add protection. |
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated CORS origins. Narrow this before exposing the service outside a trusted network. |
 | `HOST_PORT` | `8780` | Host port published by compose; not an app runtime env var. |
+| `VOSCRIPT_IMAGE` | `ghcr.io/mapleeve/voscript:v0.8.5` | Published image used by Compose; override with a compatible published tag or digest. Normal installation needs no local build. |
 | `MAX_UPLOAD_BYTES` | `2147483648` | Per-upload byte cap. Larger uploads return `413` and the partial file is removed. |
 | `DATA_DIR` | `/data` | In-container data root for transcriptions, uploads, and voiceprints. Compose mounts host `./data` to `/data` by default. |
 | `MODEL_CACHE_DIR` | `./models` | Host model-cache directory used by compose, mounted to `/cache` and read-only `/models`. |
@@ -36,11 +37,14 @@ parameters yet.
 | `DEVICE` | `cuda` | Pipeline inference device. Use `cpu` for CPU-only, macOS, or non-NVIDIA hosts. |
 | `CUDA_VISIBLE_DEVICES` | unset | Optional NVIDIA visibility limit. By default this variable is not injected and compose requests every Docker-exposed GPU. Add it only through `docker-compose.override.yml` or another explicit operator env override when you need to restrict the visible GPU set; inside the container, `cuda:0` is the first visible GPU and may not be physical host GPU0. For CPU-only mode, set `DEVICE=cpu`. |
 | `FFMPEG_TIMEOUT_SEC` | `1800` | ffmpeg conversion timeout in seconds; timeout returns `504`. |
-| `JOBS_MAX_CACHE` | `200` | In-memory job LRU limit. Evicted completed jobs remain queryable from disk `status.json` / `result.json`. |
+| `JOBS_MAX_CACHE` | `200` | In-memory terminal-job history limit; active jobs are not evicted by this cap. Evicted terminal jobs remain queryable from disk `status.json` / `result.json`. |
+| `TRANSCRIPTION_MAX_ACTIVE_JOBS` | `200` | Admission cap for unfinished transcription jobs, including queued and running jobs. New jobs return `503` at the cap. Set `0` to disable. |
+| `TRANSCRIPTION_MAX_IN_FLIGHT_JOBS` | `4` | Cap on in-flight jobs counted by unique audio hash; this does not enable four concurrent GPU jobs. New jobs return `503` at the cap. Set `0` to disable. |
+| `TRANSCRIPTION_MIN_FREE_DISK_BYTES` | `1073741824` | New-job admission requires at least 1 GiB free on the data disk. Otherwise returns `503` and removes this upload. Set `0` to disable; this is not a disk-space reservation. |
 | `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU model idle-unload timeout, defaulting to 180 seconds (3 minutes). Set `0` to disable idle unload and keep models resident. When enabled, loaded models are released only after the serialized GPU runtime has been idle for this many seconds; on the next reload, ASR, diarization, and embedding each choose the visible CUDA device with the most free memory during their own lazy load. |
-| `RUST_KERNEL_MODE` | `off` | Optional Rust-backed provider/kernel mode. `off` keeps Python implementations; `required` makes selected Rust-backed paths import and run successfully or fail closed. The current selected paths are voiceprint scoring, result post-processing, and artifact manifest helper contracts; CI / Docker packaging still validates the Rust extension directly when the runtime default is off. |
+| `RUST_KERNEL_MODE` | `required` | Selected Rust-backed voiceprint scoring, result post-processing, and artifact manifest helper paths must import and execute successfully or fail closed. `off` is an explicit Python rollback, not the default. |
 
-`MODELS_DIR` and `LANGUAGE` are defined in the config module, but v0.8.4's main
+`MODELS_DIR` and `LANGUAGE` are defined in the config module, but the current main
 HTTP transcription path does not use them as stable public tuning knobs:
 Whisper local checkpoint lookup still expects `/models/faster-whisper-<WHISPER_MODEL>`,
 and default language should be controlled with the request `language` field or
@@ -97,7 +101,7 @@ cache is incomplete.
 
 Current internal ASR defaults are `beam_size=5`, `vad_filter=True`,
 `vad_parameters.min_silence_duration_ms=500`, and `condition_on_previous_text=False`.
-These do not have env or API fields in v0.8.4. Do not configure nonexistent
+These do not have env or API fields. Do not configure nonexistent
 variables such as `WHISPER_BEAM_SIZE`, `WHISPER_COMPUTE_TYPE`, or `WHISPER_VAD_*`.
 
 ## Denoising
@@ -105,14 +109,15 @@ variables such as `WHISPER_BEAM_SIZE`, `WHISPER_COMPUTE_TYPE`, or `WHISPER_VAD_*
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `DENOISE_MODEL` | `none` | Service default backend: `none`, `deepfilternet`, or `noisereduce`. Unknown values log a warning and skip denoising. |
-| `DENOISE_SNR_THRESHOLD` | `10.0` | DeepFilterNet SNR gate in dB. When `deepfilternet` is selected, audio estimated at or above this value is skipped to avoid degrading clean recordings; `noisereduce` does not use this gate. |
+| `DENOISE_SNR_THRESHOLD` | `10.0` | DeepFilterNet SNR gate in dB. When `deepfilternet` is selected, audio estimated at or above this value is skipped to avoid degrading clean recordings; `noisereduce` is not SNR-gated but still has audio-duration protection. |
+| `DENOISE_MAX_AUDIO_DURATION_SEC` | `7200` | Audio-duration guard, not an execution timeout. Longer audio skips optional denoising and keeps the original audio for transcription. Unreadable or invalid duration metadata also skips denoising with `reason=audio_duration_unavailable`. Set `0` to remove the known-duration cap, not the unknown-duration safeguard. |
 | API `denoise_model` | omitted | Omitted means inherit `DENOISE_MODEL`; explicit `none` disables denoising for this job only. |
 | API `snr_threshold` | omitted | Omitted means inherit `DENOISE_SNR_THRESHOLD`; explicit values override the DeepFilterNet SNR gate for this job only. |
 
-v0.8.4 defaults to `DENOISE_MODEL=none` for clean meeting-recorder audio. Enable
+The default is `DENOISE_MODEL=none` for clean meeting-recorder audio. Enable
 `deepfilternet` or `noisereduce` only for noisy environments, either per job or
 as a service default. If you need clean recordings to be skipped automatically,
-use `deepfilternet`; `noisereduce` runs whenever it is selected.
+use `deepfilternet`; both denoising backends respect `DENOISE_MAX_AUDIO_DURATION_SEC`.
 
 ## Diarization and Alignment
 
@@ -124,7 +129,8 @@ use `deepfilternet`; `noisereduce` runs whenever it is selected.
 | `WHISPERX_ALIGN_DEVICE` | `cpu` | Runtime device for WhisperX forced alignment. CPU is the default to isolate wav2vec2 alignment from GPU ASR / speaker-embedding runtimes; set to `pipeline` / `asr` / `cuda` / `cuda:0` only after validating CUDA alignment stability. |
 | `WHISPERX_ALIGN_MODEL_MAP` | empty | Comma-separated `lang=model` overrides, for example `zh=org/model`. |
 | `WHISPERX_ALIGN_MODEL_DIR` | empty | Optional alignment model directory; passed through only when the installed WhisperX supports that parameter. |
-| `WHISPERX_ALIGN_CACHE_ONLY` | `0` | When `1`, requests cache-only alignment model loading, only when supported by the installed WhisperX. |
+| `WHISPERX_ALIGN_CACHE_ONLY` | `0` | When `1`, alignment models load only from local cache without network access on that loading path. Incomplete caches produce sanitized failure metadata instead of a download. This does not make ASR, diarization, and embedding fully offline. |
+| `WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC` | `7200` | Audio-duration guard, not an execution timeout. Longer audio skips forced alignment before full-audio loading and keeps the transcript. Unreadable or invalid duration metadata also records `alignment.status=skipped, reason=audio_duration_unavailable`. Set `0` to remove the known-duration cap, not the unknown-duration safeguard. |
 
 Alignment is optional metadata. On success, results may include
 `alignment.status=succeeded` and `segments[].words`. If disabled or failed, the
@@ -138,10 +144,13 @@ job still completes; `words` may be absent and `alignment` records `skipped` or
 | `EMBEDDING_DIM` | `256` | Voiceprint vector dimension used for DB and AS-norm cohort shape checks. Do not mix existing stores across dimensions. |
 | `MIN_EMBED_DURATION` | `1.5` | Diarization turns shorter than this are ignored for speaker embedding extraction. |
 | `MAX_EMBED_DURATION` | `10.0` | Longer turns are clipped to this window before embedding extraction. |
+| `EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC` | `1800` | Audio-duration guard for full-audio preloading, not an execution timeout. Known durations at or below this limit can preload once; longer or unknown durations use selected-turn reads and continue embedding extraction. Set `0` to remove the preload cap for known-duration audio. |
 
-Each speaker cluster uses up to the 10 longest usable chunks to produce an
-averaged embedding. Very short, fragmented, or noisy turns reduce enrollment and
-matching quality.
+Candidate turns are filtered and ranked using metadata before decoding, then
+each speaker cluster uses up to the 10 longest usable chunks for its averaged
+embedding; it does not decode every turn before selecting ten. Failed preloads
+also fall back to segment reads. Very short, fragmented, or noisy turns reduce
+enrollment and matching quality.
 
 ## Voiceprints and AS-norm
 
@@ -192,6 +201,7 @@ Stable anchors in completed transcription results:
   z-score depending on cohort state.
 - `segments[].words`: optional word-level alignment.
 - Top-level `alignment`: optional forced-alignment metadata, sanitized.
+- Identical display names never merge separate speaker clusters; each keeps its `speaker_label`.
 - Top-level `params`: effective per-job processing settings, including request
   overrides and service defaults used for this result.
 - Top-level `artifacts`: optional artifact manifest listing stable / optional /

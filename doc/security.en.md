@@ -22,7 +22,7 @@ Treat the service as if it were an internal database.
 
 ## Built-in hardening (on by default)
 
-As of 0.8.4 the following protections are in place out of the box:
+As of 0.8.5 the following protections are in place out of the box:
 
 1. **Container runs as a non-root user.** The Dockerfile creates an
    `app` user (uid/gid 1000 by default, overridable via `APP_UID`/
@@ -31,7 +31,7 @@ As of 0.8.4 the following protections are in place out of the box:
    read root-owned files on the host.
 2. **Upload size limit via `MAX_UPLOAD_BYTES`** (default 2 GiB).
    Chunked streaming copy aborts with `413` on overflow and deletes
-   the partial artifact — no disk-exhaustion DoS.
+   the partial artifact. This bounds one upload, but does not by itself prevent disk exhaustion.
 3. **Upload filename sanitization.** Only the final path component
    of the client-supplied `filename` is kept. `../../etc/passwd.wav`
    reduces to `passwd.wav` before the save path is built.
@@ -54,6 +54,22 @@ As of 0.8.4 the following protections are in place out of the box:
 12. **ffmpeg timeout**: `FFMPEG_TIMEOUT_SEC` (default 1800 s) prevents malformed audio from hanging the process
 13. **Pickle protection**: `np.load(allow_pickle=False)` prevents arbitrary code execution from malicious `.npy` embedding files
 14. **Zero-vector defense**: voiceprint `identify()` returns early on all-zero embeddings, preventing AS-norm scoring from producing false matches
+15. **Transcription admission budgets**: defaults cap unfinished jobs at 200 and
+    in-flight unique audio hashes at four, and require at least 1 GiB free on the
+    data disk. Rejected new jobs return `503` and remove this upload; dedup hits
+    reuse existing jobs. These are admission checks, not global rate limiting
+    or disk-space reservations.
+16. **Original-audio download confinement**: persisted filenames must be a single
+    basename. Directory components, backslashes, null bytes, and resolved paths
+    outside the upload directory are rejected, so tampered results cannot name
+    arbitrary files.
+17. **Full-audio memory guards**: optional denoising and forced alignment are
+    skipped for audio longer than 7200 seconds by default, while the job
+    continues. Embedding selects turns by metadata first and uses segment reads
+    above 1800 seconds. These are audio-duration guards, not execution timeouts;
+    assess available resources before overriding or disabling them.
+18. **Rust required by default**: `RUST_KERNEL_MODE=required` makes selected Rust
+    paths import and execute successfully or fail closed without silent Python fallback.
 
 ## Required deployment-side hardening
 
@@ -73,9 +89,10 @@ Things the code can't enforce that the operator must get right:
 4. **Keep your HuggingFace token out of logs and out of images.** It
    is read from `HF_TOKEN` at runtime and used only to download
    pyannote models — nothing else.
-5. **Back up `data/voiceprints/`.** Voiceprints are biometric data;
+5. **Back up voiceprints, AS-norm cohort, and model caches.** Voiceprints are biometric data;
    losing them means re-enrolling every speaker, and leaking them is
-   worse than leaking regular DB rows.
+   worse than leaking regular DB rows. Preserve existing data directories and
+   mounts during upgrades; never delete voiceprints or shrink the cohort as an upgrade step.
 6. **Match the host directory owner to `APP_UID`/`APP_GID`.** The
    container runs as uid 1000 by default — if your `DATA_DIR` is
    owned by a different user, either `chown -R 1000:1000 DATA_DIR`

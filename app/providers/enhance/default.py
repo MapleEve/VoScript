@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import time
 
-from config import DENOISE_MODEL, DENOISE_SNR_THRESHOLD
+from config import DENOISE_MAX_AUDIO_DURATION_SEC, DENOISE_MODEL, DENOISE_SNR_THRESHOLD
+from infra.audio import io_compat as audio_io
+from infra.audio.metadata import audio_duration_seconds
 from pipeline.contracts import (
     AudioEnhancementProvider,
     AudioEnhancementRequest,
@@ -38,9 +40,7 @@ def _estimate_snr(wav_path):
     """Estimate signal-to-noise ratio (dB) using an energy-based heuristic."""
     import math
 
-    import torchaudio
-
-    waveform, sr = torchaudio.load(str(wav_path))
+    waveform, sr = audio_io.load(str(wav_path))
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
     waveform = waveform.squeeze(0)
@@ -84,6 +84,32 @@ class ConditionalDenoiseEnhancer(AudioEnhancementProvider):
         )
         out_path = request.wav_path.with_suffix(".denoised.wav")
 
+        if effective_model in {"deepfilternet", "noisereduce"}:
+            duration_s = audio_duration_seconds(request.wav_path)
+            budget_reason = None
+            if duration_s is None:
+                budget_reason = "audio_duration_unavailable"
+            elif (
+                DENOISE_MAX_AUDIO_DURATION_SEC > 0
+                and duration_s > DENOISE_MAX_AUDIO_DURATION_SEC
+            ):
+                budget_reason = "duration_budget_exceeded"
+            if budget_reason is not None:
+                logger.warning(
+                    "enhance_skipped reason=%s "
+                    "model=%s duration_s=%s max_duration_s=%.3f",
+                    budget_reason,
+                    effective_model,
+                    duration_s,
+                    DENOISE_MAX_AUDIO_DURATION_SEC,
+                )
+                return AudioEnhancementResult(
+                    input_path=request.wav_path,
+                    output_path=request.wav_path,
+                    applied=False,
+                    model=effective_model,
+                )
+
         if effective_model == "deepfilternet":
             import torch
             import torchaudio
@@ -114,17 +140,19 @@ class ConditionalDenoiseEnhancer(AudioEnhancementProvider):
             df_model, df_state = _load_deepfilternet()
             import df as _df_pkg
 
-            audio, sr = torchaudio.load(str(request.wav_path))
+            audio, sr = audio_io.load(str(request.wav_path))
             input_sample_rate = sr
             if sr != df_state.sr():
                 audio = torchaudio.functional.resample(audio, sr, df_state.sr())
             audio = audio.contiguous()
             with torch.backends.cudnn.flags(enabled=False):
                 enhanced = _df_pkg.enhance(df_model, df_state, audio)
-            torchaudio.save(
+            audio_io.save(
                 str(out_path),
                 enhanced.unsqueeze(0) if enhanced.dim() == 1 else enhanced,
                 df_state.sr(),
+                encoding="PCM_S",
+                bits_per_sample=16,
             )
             logger.info(
                 "enhance_processing_timing model=deepfilternet elapsed_s=%.3f "
@@ -140,12 +168,24 @@ class ConditionalDenoiseEnhancer(AudioEnhancementProvider):
 
         elif effective_model == "noisereduce":
             import noisereduce as nr
-            import soundfile as sf
 
             processing_started = time.perf_counter()
-            data, sr = sf.read(str(request.wav_path), dtype="float32")
+            audio, sr = audio_io.load(str(request.wav_path), channels_first=False)
+            data = audio.numpy()
+            if audio.shape[1] == 1:
+                data = data[:, 0]
             reduced = nr.reduce_noise(y=data, sr=sr, stationary=True)
-            sf.write(str(out_path), reduced, sr)
+            output = audio.new_tensor(reduced)
+            if output.dim() == 1:
+                output = output.unsqueeze(1)
+            audio_io.save(
+                str(out_path),
+                output,
+                sr,
+                channels_first=False,
+                encoding="PCM_S",
+                bits_per_sample=16,
+            )
             logger.info(
                 "enhance_processing_timing model=noisereduce elapsed_s=%.3f "
                 "applied=True reason=enhanced sample_rate=%d",

@@ -25,8 +25,17 @@ from fastapi import Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from api.deps import get_db, get_pipeline
+from application.admission import admit_transcription
 from application.transcription_jobs import run_transcription
-from config import MAX_UPLOAD_BYTES, TRANSCRIPTIONS_DIR, UPLOAD_CHUNK, UPLOADS_DIR
+from config import (
+    MAX_UPLOAD_BYTES,
+    TRANSCRIPTION_MAX_ACTIVE_JOBS,
+    TRANSCRIPTION_MAX_IN_FLIGHT_JOBS,
+    TRANSCRIPTION_MIN_FREE_DISK_BYTES,
+    TRANSCRIPTIONS_DIR,
+    UPLOAD_CHUNK,
+    UPLOADS_DIR,
+)
 from infra.audio import (
     lookup_hash,
     safe_log_filename,
@@ -34,7 +43,12 @@ from infra.audio import (
     save_upload_and_hash,
 )
 from infra.job_persistence import _atomic_write_json, _write_status
-from infra.job_runtime import jobs, register_in_flight, unregister_in_flight
+from infra.job_runtime import (
+    JobAdmissionError,
+    jobs,
+    release_active_job,
+    unregister_in_flight,
+)
 from pipeline.contracts import normalize_status_payload
 
 _SPK_ID_RE = re.compile(r"^spk_[A-Za-z0-9_-]{1,64}$")
@@ -146,95 +160,114 @@ async def transcribe(
     safe_filename = safe_log_filename(safe_filename) or "upload"
     save_path = UPLOADS_DIR / f"{job_id}_{safe_filename}"
 
-    # PERF-C2: async write + streaming SHA-256 — no event-loop blockage on large uploads.
+    file_hash = None
+    durable = False
+    started = False
     try:
-        _size, file_hash = await save_upload_and_hash(
-            file, save_path, MAX_UPLOAD_BYTES, UPLOAD_CHUNK
-        )
-    except ValueError as exc:
-        save_path.unlink(missing_ok=True)
-        raise HTTPException(413, str(exc)) from exc
-
-    # Dedup: if identical audio was already transcribed, return existing result.
-    existing_id = lookup_hash(file_hash)
-    if existing_id:
-        save_path.unlink(missing_ok=True)
-        logger.info(
-            "Dedup hit: %s already transcribed as %s", safe_filename, existing_id
-        )
-        return {"id": existing_id, "status": "completed", "deduplicated": True}
-
-    jobs[job_id] = {
-        "status": "queued",
-        "filename": safe_filename,
-        "created_at": datetime.now(tz=timezone.utc).isoformat(),
-    }
-    # Persist status.json BEFORE registering in-flight or starting the thread.
-    # This ensures any concurrent requester that receives this job_id via the
-    # in-flight dedup path is guaranteed to find a durable record on disk.
-    if not _write_status(job_id, "queued", filename=safe_filename):
-        _discard_bootstrap_job(job_id, save_path)
-        raise HTTPException(
-            503, "Failed to persist job state — disk error, retry later"
-        )
-
-    # In-flight dedup: same content arriving concurrently reuses the first job.
-    # Registered AFTER status.json exists so the returned job_id is always live.
-    if file_hash:
-        existing_job = register_in_flight(file_hash, job_id)
-        if existing_job:
-            # Another request already owns this hash and has a durable record.
-            # Undo our own setup and redirect to the existing job.
-            _discard_bootstrap_job(job_id, save_path)
-            logger.info(
-                "In-flight dedup: %s already processing as %s",
-                safe_filename,
-                existing_job,
+        # Stream the upload and hash before admission so duplicates still reuse
+        # existing work when capacity or free-space budgets reject new work.
+        try:
+            _size, file_hash = await save_upload_and_hash(
+                file, save_path, MAX_UPLOAD_BYTES, UPLOAD_CHUNK
             )
-            return {"id": existing_job, "status": "queued", "deduplicated": True}
-    # CD-C3: daemon=True ensures this thread does not prevent the process from
-    # exiting on SIGTERM — the OS will clean up in-progress transcriptions on
-    # shutdown rather than hanging indefinitely waiting for the thread to finish.
-    thread = Thread(
-        target=run_transcription,
-        args=(
-            job_id,
-            save_path,
-            language,
-            min_speakers,
-            max_speakers,
-            pipeline,
-            voiceprint_db,
-            denoise_model,
-            snr_threshold,
-            file_hash,
-            no_repeat_ngram_size if no_repeat_ngram_size >= 3 else 0,
-        ),
-        daemon=True,
-    )
-    try:
-        thread.start()
-    except Exception as exc:
-        logger.exception("Failed to start transcription thread for %s", job_id)
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = "Failed to start background transcription"
-        _write_status(job_id, "failed", error=str(exc), filename=safe_filename)
-        save_path.unlink(missing_ok=True)
-        if file_hash:
-            unregister_in_flight(file_hash, job_id)
-        raise HTTPException(
-            503, "Failed to start background transcription — retry later"
-        ) from exc
+        except ValueError as exc:
+            raise HTTPException(413, str(exc)) from exc
 
-    return {"id": job_id, "status": "queued"}
+        existing_id = lookup_hash(file_hash)
+        if existing_id:
+            save_path.unlink(missing_ok=True)
+            return {"id": existing_id, "status": "completed", "deduplicated": True}
+
+        def _prepare():
+            jobs[job_id] = {
+                "status": "queued",
+                "filename": safe_filename,
+                "created_at": datetime.now(tz=timezone.utc).isoformat(),
+            }
+            if not _write_status(job_id, "queued", filename=safe_filename):
+                raise HTTPException(503, "Failed to persist job state; retry later")
+
+        try:
+            existing_job = admit_transcription(
+                file_hash,
+                job_id,
+                uploads_dir=UPLOADS_DIR,
+                max_active_jobs=TRANSCRIPTION_MAX_ACTIVE_JOBS,
+                max_in_flight_jobs=TRANSCRIPTION_MAX_IN_FLIGHT_JOBS,
+                min_free_disk_bytes=TRANSCRIPTION_MIN_FREE_DISK_BYTES,
+                prepare=_prepare,
+            )
+        except JobAdmissionError as exc:
+            logger.info("transcription_admission rejected reason=%s", exc.reason)
+            raise HTTPException(503, exc.reason) from exc
+
+        if existing_job:
+            save_path.unlink(missing_ok=True)
+            return {"id": existing_job, "status": "queued", "deduplicated": True}
+        durable = True
+        try:
+            thread = Thread(
+                target=run_transcription,
+                args=(
+                    job_id,
+                    save_path,
+                    language,
+                    min_speakers,
+                    max_speakers,
+                    pipeline,
+                    voiceprint_db,
+                    denoise_model,
+                    snr_threshold,
+                    file_hash,
+                    no_repeat_ngram_size if no_repeat_ngram_size >= 3 else 0,
+                ),
+                daemon=True,
+            )
+            thread.start()
+        except Exception as exc:
+            logger.exception("Failed to start transcription thread")
+            try:
+                try:
+                    _write_status(
+                        job_id, "failed", error=str(exc), filename=safe_filename
+                    )
+                finally:
+                    jobs[job_id] = {
+                        **(jobs.get(job_id) or {"filename": safe_filename}),
+                        "status": "failed",
+                        "error": "Failed to start background transcription",
+                    }
+            except Exception:
+                logger.exception("Failed to record thread-start failure")
+            raise HTTPException(
+                503, "Failed to start background transcription; retry later"
+            ) from exc
+        started = True
+        return {"id": job_id, "status": "queued"}
+    except BaseException:
+        try:
+            if durable:
+                save_path.unlink(missing_ok=True)
+            else:
+                _discard_bootstrap_job(job_id, save_path)
+        except Exception:
+            logger.exception("Failed to clean up rejected transcription upload")
+        raise
+    finally:
+        if not started:
+            try:
+                if file_hash:
+                    unregister_in_flight(file_hash, job_id)
+            finally:
+                release_active_job(job_id)
 
 
 @router.get("/jobs/{job_id}")
 async def get_job(
     job_id: Annotated[str, FPath(pattern=r"^tr_[A-Za-z0-9_-]{1,64}$")],
 ):
-    if job_id in jobs:
-        job = jobs[job_id]
+    job = jobs.get(job_id)
+    if job is not None:
         resp = {"id": job_id, "status": job["status"], "filename": job.get("filename")}
         if job["status"] == "completed":
             resp["result"] = job["result"]
@@ -243,8 +276,9 @@ async def get_job(
         return resp
 
     # AR-C2 fallback: process restarted — try reading persisted status.json.
-    status_path = TRANSCRIPTIONS_DIR / job_id / "status.json"
-    result_path = TRANSCRIPTIONS_DIR / job_id / "result.json"
+    tr_dir = safe_tr_dir(job_id)
+    status_path = tr_dir / "status.json"
+    result_path = tr_dir / "result.json"
 
     if status_path.exists():
         try:
@@ -325,7 +359,20 @@ async def download_audio(
 ):
     """Return the original uploaded audio file for this transcription."""
     data = _load_transcription_result(tr_id)
-    audio_file = UPLOADS_DIR / data["filename"]
+    filename = data.get("filename")
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or filename in {".", ".."}
+        or PurePosixPath(filename).name != filename
+        or "\\" in filename
+        or "\x00" in filename
+    ):
+        raise HTTPException(400, "Invalid audio filename")
+    uploads_root = UPLOADS_DIR.resolve()
+    audio_file = (uploads_root / filename).resolve()
+    if not audio_file.is_relative_to(uploads_root):
+        raise HTTPException(400, "Audio path escapes upload directory")
     if not audio_file.exists():
         raise HTTPException(404, "Original audio file not found")
     return FileResponse(audio_file, filename=data["filename"])

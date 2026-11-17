@@ -4,7 +4,60 @@
 
 ## Unreleased
 
-No unreleased changes.
+0.8.5 is being prepared; see below. Image publication and deployment acceptance
+are not implied.
+
+## 0.8.5 — Security and runtime maintenance (2026-11-17; pending release)
+
+### Security
+
+- Updated runtime dependency constraints to the PyTorch 2.10.0 / CUDA 12.6
+  compatibility line and upgraded Transformers, Hugging Face Hub, requests,
+  urllib3, Pillow, and related dependencies. Audio file I/O and legacy pyannote
+  download arguments use scoped compatibility adapters rather than globally
+  replacing third-party modules. Upgrades do not imply all transitive
+  dependencies are free of known vulnerabilities.
+- Original-audio downloads accept only a single basename inside the upload
+  directory and validate resolved paths, rejecting traversal, backslashes, and
+  null bytes so tampered persisted filenames cannot select arbitrary files.
+- New-job admission defaults to 200 unfinished jobs, four in-flight unique audio
+  hashes, and at least 1 GiB free on the data disk. Rejections return `503` and
+  clean up this upload; completed and in-flight duplicates can still reuse work.
+
+### Reliability
+
+- `RUST_KERNEL_MODE` now defaults to `required`: selected Rust voiceprint scoring,
+  post-processing, and artifact helper paths fail closed if unavailable or
+  unsuccessful. `off` remains an explicit Python rollback only.
+- Fixed alignment cache-only handling for already imported Hugging Face /
+  Transformers modules. Missing caches degrade instead of triggering downloads;
+  this switch only covers alignment model loading.
+- Active jobs are no longer evicted by the terminal-history cache; terminal-state
+  persistence and admission-slot cleanup cover failure paths. Failed or interrupted
+  ffmpeg runs remove partial normalized audio.
+- Optional denoising and forced alignment observably skip audio longer than the
+  default 7200 seconds and continue the job. These budgets guard audio duration,
+  not execution time; exceeding them does not time out the job. Unreadable or
+  invalid duration metadata also skips these optional steps with
+  `reason=audio_duration_unavailable`, even when the known-duration cap is disabled.
+- Embedding uses metadata to select up to ten longest usable chunks per cluster
+  before decoding. Full-audio preloading defaults to known durations at or below
+  1800 seconds; longer or unknown durations and failed preloads use segment reads.
+- HTTP workflows and speaker output remain compatible: separate speaker clusters
+  are not merged by identical display names, and word alignment remains optional.
+  Upgrades do not require clearing voiceprints, model caches, or AS-norm cohort.
+
+### Image publication
+
+- Image publication uses the Docker workflow's manual `workflow_dispatch`
+  entry point on `main`, with an existing stable published tag as input. Creating
+  a tag or publishing a GitHub Release alone does not start image publication.
+  The workflow validates the exact integrated source and required CI evidence,
+  then audits and smoke-checks the same image before registry writes.
+- The supported image uses Python 3.11, official PyTorch CUDA 12.6 wheels, the
+  matching Rust extension, and authenticated compatibility adaptations. Native
+  installations are not covered by that image gate; requirements alone are not
+  a complete native installation recipe.
 
 ## 0.8.4 — Rust kernel foundation and release gates (2026-06-10)
 

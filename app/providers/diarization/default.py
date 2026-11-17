@@ -8,6 +8,7 @@ import re
 import time
 from contextlib import contextmanager
 from collections.abc import Callable
+from importlib import import_module
 from inspect import Parameter, signature
 from typing import Any
 
@@ -15,9 +16,11 @@ from config import (
     WHISPERX_ALIGN_DEVICE,
     WHISPERX_ALIGN_CACHE_ONLY,
     WHISPERX_ALIGN_DISABLED_LANGUAGES,
+    WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC,
     WHISPERX_ALIGN_MODEL_DIR,
     WHISPERX_ALIGN_MODEL_MAP,
 )
+from infra.audio.metadata import audio_duration_seconds
 from pipeline.contracts import (
     DiarizationProvider,
     DiarizationRequest,
@@ -162,11 +165,28 @@ def _cache_only_alignment_environment():
         "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE"),
         "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE"),
     }
+    module_flags: list[tuple[object, str, object]] = []
+    # First imports cache offline flags. Capture them under the user's original
+    # environment, before setting either the environment or in-memory flags.
+    for module_name, attr_name in (
+        ("huggingface_hub.constants", "HF_HUB_OFFLINE"),
+        ("transformers.utils.hub", "_is_offline_mode"),
+    ):
+        try:
+            module = import_module(module_name)
+        except ImportError:
+            continue
+        if hasattr(module, attr_name):
+            module_flags.append((module, attr_name, getattr(module, attr_name)))
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     try:
+        for module, attr_name, _ in module_flags:
+            setattr(module, attr_name, True)
         yield
     finally:
+        for module, attr_name, value in reversed(module_flags):
+            setattr(module, attr_name, value)
         for name, value in previous.items():
             if value is None:
                 os.environ.pop(name, None)
@@ -249,8 +269,6 @@ def align_diarized_segments_with_metadata(
 ) -> tuple[list[dict[str, object]], dict[str, Any]]:
     """Align ASR output and attach diarization speaker labels."""
 
-    import whisperx
-
     segments = transcription_result.get("segments", [])
     language = _normalise_language(transcription_result.get("language"))
     model_source = (
@@ -274,7 +292,35 @@ def align_diarized_segments_with_metadata(
         )
         return build_aligned_segments(segments, diarization_turns), metadata
 
+    duration_s = audio_duration_seconds(audio_path)
+    budget_reason = None
+    if duration_s is None:
+        budget_reason = "audio_duration_unavailable"
+    elif (
+        WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC > 0
+        and duration_s > WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC
+    ):
+        budget_reason = "duration_budget_exceeded"
+    if budget_reason is not None:
+        metadata = {
+            "status": "skipped",
+            "language": language,
+            "model": model_metadata,
+            "reason": budget_reason,
+            "duration_s": None if duration_s is None else round(duration_s, 3),
+            "max_duration_s": WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC,
+        }
+        logger.warning(
+            "alignment_skipped reason=%s duration_s=%s max_duration_s=%.3f",
+            budget_reason,
+            duration_s,
+            WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC,
+        )
+        return build_aligned_segments(segments, diarization_turns), metadata
+
     try:
+        import whisperx
+
         preflight_message = _torch_preflight_message(language, model_name)
         if preflight_message:
             logger.info(preflight_message)

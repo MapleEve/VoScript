@@ -10,7 +10,12 @@ from config import (
 )
 from infra.audio import register_hash
 from infra.job_persistence import _write_status
-from infra.job_runtime import jobs, run_serialized_gpu_work, unregister_in_flight
+from infra.job_runtime import (
+    jobs,
+    release_active_job,
+    run_serialized_gpu_work,
+    unregister_in_flight,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +40,27 @@ def run_transcription(
     the function testable in isolation.
     """
 
-    def _record_status(status: str) -> None:
-        jobs[job_id]["status"] = status
+    def _record_status(status: str, **changes) -> None:
+        # Disk is authoritative even if a caller removed the cache entry.
         extra_filename = audio_path.name if status == "converting" else None
-        _write_status(job_id, status, filename=extra_filename)
+
+        def _publish_state():
+            state = jobs.get(job_id) or {"filename": audio_path.name}
+            jobs[job_id] = {**state, **changes, "status": status}
+
+        try:
+            persisted = _write_status(
+                job_id, status, filename=extra_filename, error=changes.get("error")
+            )
+            if persisted is False:
+                raise OSError(f"Failed to persist job status: {status}")
+        except Exception:
+            try:
+                _publish_state()
+            except Exception:
+                logger.exception("Failed to publish transcription job state")
+            raise
+        _publish_state()
 
     job_started = time.perf_counter()
     try:
@@ -64,29 +86,30 @@ def run_transcription(
         if tr is None:
             raise RuntimeError("Pipeline artifacts stage did not return transcription")
 
+        _record_status("completed", result=tr)
         if file_hash:
             register_hash(file_hash, job_id)
-
-        jobs[job_id]["status"] = "completed"
-        jobs[job_id]["result"] = tr
-        _write_status(job_id, "completed")
         logger.info(
             "transcription_job_timing status=completed elapsed_s=%.3f segment_count=%d speaker_count=%d",
             time.perf_counter() - job_started,
             len(tr.get("segments", [])),
             len(tr.get("speaker_map", {})),
         )
-        if file_hash:
-            unregister_in_flight(file_hash, job_id)
-
     except Exception as e:
         logger.exception(
             "transcription_job_timing status=failed elapsed_s=%.3f error_type=%s",
             time.perf_counter() - job_started,
             e.__class__.__name__,
         )
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
-        _write_status(job_id, "failed", error=str(e))
-        if file_hash:
-            unregister_in_flight(file_hash, job_id)
+        try:
+            _record_status("failed", error=str(e))
+        except Exception:
+            logger.exception("Failed to record terminal transcription job state")
+            # Surface the original failure, not the failure of its reporting path.
+            raise e
+    finally:
+        try:
+            if file_hash:
+                unregister_in_flight(file_hash, job_id)
+        finally:
+            release_active_job(job_id)

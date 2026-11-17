@@ -6,11 +6,14 @@ import logging
 import time
 
 import numpy as np
-import soundfile as sf
-import torch
 import torchaudio
 
-from config import MAX_EMBED_DURATION, MIN_EMBED_DURATION
+from config import (
+    EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC,
+    MAX_EMBED_DURATION,
+    MIN_EMBED_DURATION,
+)
+from infra.audio import io_compat as audio_io
 from pipeline.contracts import (
     SpeakerEmbeddingProvider,
     SpeakerEmbeddingRequest,
@@ -21,11 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 def _load_full_waveform(audio_path: str):
-    """Load normalized audio once with libsndfile to avoid per-turn torch decode."""
+    """Preload only after metadata selection and the duration budget check."""
 
     load_started = time.perf_counter()
-    data, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
-    waveform = torch.from_numpy(data.T.copy())
+    waveform, sample_rate = audio_io.load(audio_path)
     logger.info(
         "embedding_audio_load_timing backend=soundfile elapsed_s=%.3f sample_rate=%d channels=%d frames=%d",
         time.perf_counter() - load_started,
@@ -43,21 +45,16 @@ def extract_embeddings_for_turns(
 ) -> dict[str, np.ndarray]:
     """Extract averaged embeddings for each speaker cluster."""
 
-    waveform = None
-    try:
-        waveform, native_sr = _load_full_waveform(audio_path)
-    except Exception as exc:
-        logger.warning(
-            "Falling back to torchaudio segment loading for embedding audio: %s",
-            exc,
-        )
-        info = torchaudio.info(audio_path)
-        native_sr = info.sample_rate
+    info = audio_io.info(audio_path)
+    native_sr = info.sample_rate
+    audio_frames = getattr(info, "num_frames", None)
+    if native_sr <= 0:
+        raise ValueError("Invalid embedding audio sample rate")
     target_sr = 16000
     min_samples = int(MIN_EMBED_DURATION * native_sr)
     max_samples = int(MAX_EMBED_DURATION * native_sr)
 
-    speaker_segments: dict[str, list] = {}
+    speaker_segments: dict[str, list[tuple[int, int, int]]] = {}
     for turn in turns:
         speaker = turn["speaker"]
         start_sample = int(turn["start"] * native_sr)
@@ -69,41 +66,79 @@ def extract_embeddings_for_turns(
         if num_frames > max_samples:
             num_frames = max_samples
 
-        if waveform is not None:
-            chunk = waveform[:, start_sample : start_sample + num_frames].contiguous()
-            chunk_sr = native_sr
-        else:
-            try:
-                chunk, chunk_sr = torchaudio.load(
-                    audio_path,
-                    frame_offset=start_sample,
-                    num_frames=num_frames,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to load embedding audio segment [%d:%d]: %s",
-                    start_sample,
-                    end_sample,
-                    exc,
-                )
-                continue
-        if chunk.shape[1] <= 0:
+        available_frames = num_frames
+        if audio_frames is not None:
+            available_frames = min(num_frames, max(audio_frames - start_sample, 0))
+        if available_frames <= 0:
             continue
+        # Match the old post-resample length ranking, including stable ties
+        # and turns clipped by EOF, without materializing every turn's audio.
+        ranked_frames = (available_frames * target_sr + native_sr - 1) // native_sr
+        speaker_segments.setdefault(speaker, []).append(
+            (start_sample, num_frames, ranked_frames)
+        )
 
-        if chunk_sr != target_sr:
-            chunk = torchaudio.functional.resample(chunk, chunk_sr, target_sr)
-        if chunk.shape[0] > 1:
-            chunk = chunk.mean(dim=0, keepdim=True)
+    for segments in speaker_segments.values():
+        segments.sort(key=lambda segment: segment[2], reverse=True)
+    if not speaker_segments:
+        return {}
 
-        speaker_segments.setdefault(speaker, []).append(chunk)
+    waveform = None
+    duration_s = None if audio_frames is None else audio_frames / native_sr
+    if duration_s is not None and (
+        EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC <= 0
+        or duration_s <= EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC
+    ):
+        try:
+            waveform, _ = _load_full_waveform(audio_path)
+        except Exception as exc:
+            logger.warning(
+                "Embedding preload failed; using selected segments error_type=%s",
+                type(exc).__name__,
+            )
+    else:
+        logger.info(
+            "embedding_full_audio_preload_skipped reason=duration_budget_exceeded "
+            "max_duration_s=%.3f",
+            EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC,
+        )
 
     embeddings: dict[str, np.ndarray] = {}
     model_processing_elapsed_s = 0.0
     processed_chunk_count = 0
-    for speaker, chunks in speaker_segments.items():
+    for speaker, segments in speaker_segments.items():
         emb_list = []
-        chunks.sort(key=lambda chunk: chunk.shape[1], reverse=True)
-        for chunk in chunks[:10]:
+        for start_sample, num_frames, _ in segments:
+            if len(emb_list) >= 10:
+                break
+            if waveform is not None:
+                chunk = waveform[
+                    :, start_sample : start_sample + num_frames
+                ].contiguous()
+                chunk_sr = native_sr
+            else:
+                try:
+                    chunk, chunk_sr = audio_io.load(
+                        audio_path,
+                        frame_offset=start_sample,
+                        num_frames=num_frames,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load embedding audio segment [%d:%d]: %s",
+                        start_sample,
+                        start_sample + num_frames,
+                        type(exc).__name__,
+                    )
+                    continue
+            if chunk.shape[1] <= 0:
+                continue
+
+            if chunk_sr != target_sr:
+                chunk = torchaudio.functional.resample(chunk, chunk_sr, target_sr)
+            if chunk.shape[0] > 1:
+                chunk = chunk.mean(dim=0, keepdim=True)
+
             embedding_model = pipeline.embedding_model
             embedding_device = getattr(pipeline, "embedding_device", pipeline.device)
             processing_started = time.perf_counter()

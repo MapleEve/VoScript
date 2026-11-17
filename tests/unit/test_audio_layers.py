@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from inspect import signature
 from pathlib import Path
 from types import ModuleType
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -26,6 +27,12 @@ from pipeline.contracts import (
     VoiceprintMatchRequest,
 )
 from api.routers.transcriptions import transcribe
+
+
+@pytest.fixture(autouse=True)
+def _short_synthetic_audio_metadata(monkeypatch):
+    # Model-path tests use stub bytes rather than decodable audio fixtures.
+    monkeypatch.setattr(enhance_default, "audio_duration_seconds", lambda path: 1.0)
 
 
 def test_audio_layer_entrypoints_point_to_new_modules():
@@ -164,9 +171,7 @@ def test_estimate_snr_uses_energy_heuristic(monkeypatch, tmp_path):
     speech = np.ones(240, dtype=np.float32)
     mono = np.concatenate([quiet, speech])
     stereo = np.stack([mono, mono])
-    torchaudio_module = ModuleType("torchaudio")
-    torchaudio_module.load = lambda path: (FakeTensor(stereo), 1000)
-    monkeypatch.setitem(sys.modules, "torchaudio", torchaudio_module)
+    monkeypatch.setattr(enhance_default.audio_io, "load", lambda path: (FakeTensor(stereo), 1000))
 
     assert enhance_default._estimate_snr(tmp_path / "sample.wav") == pytest.approx(20.0)
 
@@ -207,13 +212,11 @@ def test_estimate_snr_returns_inf_for_too_short_or_silent_noise(monkeypatch, tmp
         def item(self):
             return float(np.asarray(self.values).item())
 
-    torchaudio_module = ModuleType("torchaudio")
     samples = [
         FakeTensor(np.zeros((1, 60))),
         FakeTensor(np.concatenate([np.zeros(60), np.ones(240)]).reshape(1, 300)),
     ]
-    torchaudio_module.load = lambda path: (samples.pop(0), 1000)
-    monkeypatch.setitem(sys.modules, "torchaudio", torchaudio_module)
+    monkeypatch.setattr(enhance_default.audio_io, "load", lambda path: (samples.pop(0), 1000))
 
     assert enhance_default._estimate_snr(tmp_path / "short.wav") == float("inf")
     assert enhance_default._estimate_snr(tmp_path / "silent-noise.wav") == float("inf")
@@ -281,10 +284,10 @@ def test_deepfilternet_processing_timing_log_is_public_safe(
         {"flags": staticmethod(fake_cudnn_flags)},
     )()
     torchaudio_module = ModuleType("torchaudio")
-    torchaudio_module.load = lambda path: (FakeAudio(), 48_000)
-    torchaudio_module.save = lambda path, audio, sample_rate: Path(path).write_bytes(
+    monkeypatch.setattr(enhance_default.audio_io, "load", lambda path: (FakeAudio(), 48_000))
+    monkeypatch.setattr(enhance_default.audio_io, "save", lambda path, audio, sample_rate, **kwargs: Path(path).write_bytes(
         b"enhanced"
-    )
+    ))
     torchaudio_module.functional = ModuleType("torchaudio.functional")
     torchaudio_module.functional.resample = lambda audio, sr, target_sr: audio
 
@@ -337,10 +340,30 @@ def test_noisereduce_processing_timing_log_is_public_safe(
     wav_path = tmp_path / "private-call.wav"
     wav_path.write_bytes(b"stub")
 
-    soundfile_module = ModuleType("soundfile")
-    soundfile_module.read = lambda path, dtype: ([0.0, 0.1], 44_100)
-    soundfile_module.write = lambda path, data, sample_rate: Path(path).write_bytes(
-        b"reduced"
+    class FakeAudio:
+        def __init__(self, values):
+            self.values = np.asarray(values)
+            self.shape = self.values.shape
+
+        def numpy(self):
+            return self.values
+
+        def new_tensor(self, values):
+            return FakeAudio(values)
+
+        def dim(self):
+            return self.values.ndim
+
+        def unsqueeze(self, dim):
+            return FakeAudio(np.expand_dims(self.values, dim))
+
+    monkeypatch.setattr(
+        enhance_default.audio_io, "load",
+        lambda path, channels_first: (FakeAudio([[0.0], [0.1]]), 44_100),
+    )
+    monkeypatch.setattr(
+        enhance_default.audio_io, "save",
+        lambda path, data, sample_rate, channels_first, **kwargs: Path(path).write_bytes(b"reduced"),
     )
 
     noisereduce_module = ModuleType("noisereduce")
@@ -349,7 +372,6 @@ def test_noisereduce_processing_timing_log_is_public_safe(
     )
 
     perf_values = iter([20.0, 21.25])
-    monkeypatch.setitem(sys.modules, "soundfile", soundfile_module)
     monkeypatch.setitem(sys.modules, "noisereduce", noisereduce_module)
     monkeypatch.setattr(
         enhance_default.time,
@@ -404,6 +426,7 @@ def test_ffmpeg_normalizer_invokes_ffmpeg_for_non_wav(monkeypatch, tmp_path):
 
     def fake_run(args, *, check, timeout):
         calls.append((args, check, timeout))
+        Path(args[-1]).write_bytes(b"normalized synthetic audio")
 
     monkeypatch.setattr(normalize_default.subprocess, "run", fake_run)
 
@@ -418,6 +441,8 @@ def test_ffmpeg_normalizer_invokes_ffmpeg_for_non_wav(monkeypatch, tmp_path):
     assert args[-2:] == ["--", str(tmp_path / "meeting.wav")]
     assert result.reused_source is False
     assert result.normalized_path == tmp_path / "meeting.wav"
+    assert source.read_bytes() == b"ogg"
+    assert result.normalized_path.read_bytes() == b"normalized synthetic audio"
 
 
 def test_ffmpeg_normalizer_timeout_cleans_partial(monkeypatch, tmp_path):
@@ -438,6 +463,108 @@ def test_ffmpeg_normalizer_timeout_cleans_partial(monkeypatch, tmp_path):
 
     assert getattr(excinfo.value, "status_code", None) == 504
     assert not partial.exists()
+    assert source.read_bytes() == b"mp3"
+
+
+@pytest.mark.parametrize("error", [
+    subprocess.CalledProcessError(1, "ffmpeg"),
+    FileNotFoundError("synthetic missing executable"),
+    RuntimeError("synthetic ffmpeg wrapper failure"),
+    KeyboardInterrupt(),
+])
+def test_ffmpeg_all_failures_remove_provider_partial_and_preserve_source(monkeypatch, tmp_path, error):
+    source = tmp_path / "synthetic.mp3"
+    source.write_bytes(b"synthetic source")
+    partial = source.with_suffix(".wav")
+
+    def fail(args, **kwargs):
+        Path(args[-1]).write_bytes(b"synthetic partial output")
+        raise error
+
+    monkeypatch.setattr(normalize_default.subprocess, "run", fail)
+    with pytest.raises(type(error)) as caught:
+        normalize_default.FFmpegInputNormalizer().normalize(AudioNormalizationRequest(input_path=source))
+    assert caught.value is error
+    assert not partial.exists()
+    assert source.read_bytes() == b"synthetic source"
+
+
+def test_ffmpeg_cleanup_failure_does_not_mask_original_process_error(monkeypatch, tmp_path):
+    source = tmp_path / "synthetic.mp3"
+    source.write_bytes(b"synthetic source")
+    error = subprocess.CalledProcessError(1, "ffmpeg")
+
+    def fail(*args, **kwargs):
+        raise error
+
+    def fail_unlink(*args, **kwargs):
+        raise PermissionError("synthetic cleanup failure")
+
+    monkeypatch.setattr(normalize_default.subprocess, "run", fail)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        normalize_default.FFmpegInputNormalizer().normalize(AudioNormalizationRequest(input_path=source))
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("model", ["deepfilternet", "noisereduce"])
+def test_denoise_budget_skips_before_decode_or_model_access(monkeypatch, tmp_path, model, caplog):
+    source = tmp_path / "synthetic.wav"
+    source.write_bytes(b"synthetic source")
+    monkeypatch.setattr(enhance_default, "DENOISE_MAX_AUDIO_DURATION_SEC", 7200)
+    monkeypatch.setattr(enhance_default, "audio_duration_seconds", lambda path: 7201.0)
+    monkeypatch.setattr(enhance_default.audio_io, "load", lambda *a, **kw: pytest.fail("over-budget denoise must not decode"))
+    monkeypatch.setattr(enhance_default, "_load_deepfilternet", lambda: pytest.fail("over-budget denoise must not load a model"))
+    with caplog.at_level("WARNING", logger=enhance_default.logger.name):
+        result = enhance_default.ConditionalDenoiseEnhancer().enhance(AudioEnhancementRequest(wav_path=source, model=model))
+    assert result.applied is False
+    assert result.output_path == source
+    assert source.read_bytes() == b"synthetic source"
+    assert "reason=duration_budget_exceeded" in caplog.text
+
+
+@pytest.mark.parametrize("frames,sample_rate,expected", [(16000, 16000, 1.0), (-1, 16000, None), (16000, 0, None)])
+def test_duration_helper_uses_metadata_without_decoding(monkeypatch, frames, sample_rate, expected):
+    from infra.audio import metadata
+
+    monkeypatch.setattr(metadata.audio_io, "info", lambda path: SimpleNamespace(sample_rate=sample_rate, num_frames=frames))
+    monkeypatch.setattr(metadata.audio_io, "load", lambda *a, **kw: pytest.fail("duration metadata must never decode"))
+    assert metadata.audio_duration_seconds("synthetic.wav") == expected
+
+
+@pytest.mark.parametrize("model", ["deepfilternet", "noisereduce"])
+@pytest.mark.parametrize("metadata_failure", ["read_error", "missing_frames", "invalid_rate", "nonfinite_duration"])
+def test_denoise_unknown_duration_skips_before_decode_and_preserves_source(
+    monkeypatch, tmp_path, caplog, model, metadata_failure
+):
+    from infra.audio import metadata
+
+    source = tmp_path / "synthetic.wav"
+    source.write_bytes(b"synthetic original audio")
+
+    def info(path):
+        if metadata_failure == "read_error":
+            raise OSError("synthetic header read failure")
+        if metadata_failure == "missing_frames":
+            return SimpleNamespace(sample_rate=16000)
+        if metadata_failure == "invalid_rate":
+            return SimpleNamespace(sample_rate=0, num_frames=16000)
+        return SimpleNamespace(sample_rate=16000, num_frames=float("nan"))
+
+    monkeypatch.setattr(metadata.audio_io, "info", info)
+    monkeypatch.setattr(enhance_default, "audio_duration_seconds", metadata.audio_duration_seconds)
+    monkeypatch.setattr(enhance_default.audio_io, "load", lambda *a, **kw: pytest.fail("unknown-duration denoise must not decode"))
+    monkeypatch.setattr(enhance_default, "_estimate_snr", lambda *a: pytest.fail("unknown-duration denoise must not estimate full-waveform SNR"))
+    monkeypatch.setattr(enhance_default, "_load_deepfilternet", lambda: pytest.fail("unknown-duration denoise must not load a model"))
+    with caplog.at_level("WARNING", logger=enhance_default.logger.name):
+        result = enhance_default.ConditionalDenoiseEnhancer().enhance(
+            AudioEnhancementRequest(wav_path=source, model=model)
+        )
+    assert result.applied is False
+    assert result.input_path == result.output_path == source
+    assert source.read_bytes() == b"synthetic original audio"
+    assert not source.with_suffix(".denoised.wav").exists()
+    assert "reason=audio_duration_unavailable" in caplog.text
 
 
 def test_voiceprint_match_provider_reports_no_embeddings():

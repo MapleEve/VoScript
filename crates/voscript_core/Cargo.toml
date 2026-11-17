@@ -1,6 +1,6 @@
 [package]
 name = "voscript_core"
-version = "0.8.4"
+version = "0.8.5"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
@@ -15,4 +15,4 @@ python-bindings = ["dep:pyo3"]
 extension-module = ["python-bindings", "pyo3/extension-module"]
 
 [dependencies]
-pyo3 = { version = "0.28.3", optional = true }
+pyo3 = { version = "=0.29.3", optional = true }

@@ -8,59 +8,44 @@ permissions:
   contents: read
 
 jobs:
-  issue-check-inactive:
-    permissions:
-      issues: write # for actions-cool/issues-helper to update issues
-      pull-requests: write # for actions-cool/issues-helper to update PRs
+  maintain-issues:
     runs-on: ubuntu-latest
-    steps:
-      - name: check-inactive
-        uses: actions-cool/issues-helper@v3
-        with:
-          actions: 'check-inactive'
-          token: ${{ secrets.GITHUB_TOKEN }}
-          inactive-label: 'Inactive'
-          inactive-day: 60
-
-  issue-close-require:
     permissions:
-      issues: write # for actions-cool/issues-helper to update issues
-      pull-requests: write # for actions-cool/issues-helper to update PRs
-    runs-on: ubuntu-latest
+      issues: write
     steps:
-      - name: need reproduce
-        uses: actions-cool/issues-helper@v3
+      - name: Maintain inactive issues using the existing repository token
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0, node24
         with:
-          actions: 'close-issues'
-          token: ${{ secrets.GITHUB_TOKEN }}
-          labels: '✅ Fixed'
-          inactive-day: 7
-          body: |
-            👋 @{{ author }}
-            <br/>
-            Since the issue was labeled with `✅ Fixed`, but no response in 7 days. This issue will be closed. If you have any questions, you can comment and reply.\
-            由于该 issue 被标记为已修复，同时 7 天未收到回应。现关闭 issue，若有任何问题，可评论回复。
-      - name: need reproduce
-        uses: actions-cool/issues-helper@v3
-        with:
-          actions: 'close-issues'
-          token: ${{ secrets.GITHUB_TOKEN }}
-          labels: '🤔 Need Reproduce'
-          inactive-day: 7
-          body: |
-            👋 @{{ author }}
-            <br/>
-            Since the issue was labeled with `🤔 Need Reproduce`, but no response in 7 days. This issue will be closed. If you have any questions, you can comment and reply.\
-            由于该 issue 被标记为需要更多信息，却 7 天未收到回应。现关闭 issue，若有任何问题，可评论回复。
-      - name: need reproduce
-        uses: actions-cool/issues-helper@v3
-        with:
-          actions: 'close-issues'
-          token: ${{ secrets.GITHUB_TOKEN }}
-          labels: "🙅🏻‍♀️ WON'T DO"
-          inactive-day: 3
-          body: |
-            👋 @{{ github.event.issue.user.login }}
-            <br/>
-            Since the issue was labeled with `🙅🏻‍♀️ WON'T DO`, and no response in 3 days. This issue will be closed. If you have any questions, you can comment and reply.\
-            由于该 issue 被标记为暂不处理，同时 3 天未收到回应。现关闭 issue，若有任何问题，可评论回复。
+          script: |
+            const now = Date.now();
+            const day = 24 * 60 * 60 * 1000;
+            const closingLabels = new Map([
+              ["✅ Fixed", 7], ["🤔 Need Reproduce", 7], ["🙅🏻‍♀️ WON'T DO", 3],
+            ]);
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo, state: "open", per_page: 100,
+            });
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+              // Refresh before mutating, so recent activity is not closed from a stale list.
+              const {data: current} = await github.rest.issues.get({
+                ...context.repo, issue_number: issue.number,
+              });
+              if (current.state !== "open") continue;
+              const age = (now - Date.parse(current.updated_at)) / day;
+              const labels = current.labels.map(label => typeof label === "string" ? label : label.name);
+              const closing = [...closingLabels].find(([label, days]) => labels.includes(label) && age >= days);
+              if (closing) {
+                await github.rest.issues.createComment({
+                  ...context.repo, issue_number: current.number,
+                  body: `Closing after ${closing[1]} days without activity under the "${closing[0]}" label. Please comment if further investigation is needed.`,
+                });
+                await github.rest.issues.update({
+                  ...context.repo, issue_number: current.number, state: "closed",
+                });
+              } else if (age >= 60 && !labels.includes("Inactive")) {
+                await github.rest.issues.addLabels({
+                  ...context.repo, issue_number: current.number, labels: ["Inactive"],
+                });
+              }
+            }
