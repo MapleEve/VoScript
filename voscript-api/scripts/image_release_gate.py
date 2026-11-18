@@ -421,8 +421,8 @@ def real_audio_compatibility(image: str) -> None:
 
 
 def unit_tests(image: str) -> None:
-    # Install test-only tools into the disposable container writable layer, never
-    # the published image. Bootstrap real audio libraries before conftest stubs.
+    # Git supports temporary-repository tests. Install all test-only tools in the
+    # disposable writable layer, never the published image; load real audio first.
     command(
         "docker",
         "run",
@@ -440,6 +440,8 @@ def unit_tests(image: str) -> None:
         "sh",
         image,
         "-ec",
+        "apt-get update && "
+        "apt-get install -y --no-install-recommends git && "
         "python -m pip install --target /opt/ci-tools pytest pyyaml httpx && "
         "cd /ci && PYTHONPATH=/opt/ci-tools:/ci/voscript-api/scripts "
         "python -m pytest tests/unit/ tests/test_security.py tests/test_job_service.py tests/test_voiceprint_db.py "

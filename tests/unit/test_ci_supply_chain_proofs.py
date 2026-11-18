@@ -507,6 +507,38 @@ def test_model_smoke_requires_exact_safe_global_membership(indices, diagnostic):
             exec(code, namespace)
 
 
+def test_image_unit_git_bootstrap_is_disposable_and_preserves_full_regressions(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        images, "command", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    image = "sha256:synthetic-image"
+    images.unit_tests(image)
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:5] == ("docker", "run", "--rm", "--user", "0")
+    assert args[5 : 5 + len(images.ENV)] == tuple(images.ENV)
+    assert "RUST_KERNEL_MODE=required" in args
+    assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1" in args
+    assert "PYTHONDONTWRITEBYTECODE=1" in args
+    assert args[args.index("--mount") + 1] == (
+        f"type=bind,source={images.ROOT},target=/ci,readonly"
+    )
+    assert args[-5:-1] == ("--entrypoint", "sh", image, "-ec")
+    assert kwargs == {"timeout": 1800}
+    assert args[-1].split(" && ") == [
+        "apt-get update",
+        "apt-get install -y --no-install-recommends git",
+        "python -m pip install --target /opt/ci-tools pytest pyyaml httpx",
+        "cd /ci",
+        "PYTHONPATH=/opt/ci-tools:/ci/voscript-api/scripts "
+        "python -m pytest tests/unit/ tests/test_security.py tests/test_job_service.py tests/test_voiceprint_db.py "
+        "-p ci_real_audio -p no:cacheprovider -v --tb=short --no-header",
+    ]
+
+
 def cuda_inventory():
     return [
         {"name": name, "version": installed}

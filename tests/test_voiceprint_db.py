@@ -88,6 +88,13 @@ def _asnorm_key(embedding: np.ndarray) -> bytes:
     return embedding.astype(np.float32).tobytes()
 
 
+@pytest.fixture
+def python_asnorm_oracle(monkeypatch):
+    """Fixed-score doubles test Python decisions, not native cohort scoring."""
+    bridge = importlib.import_module("providers.kernel_bridge.runtime")
+    monkeypatch.setattr(bridge, "RUST_KERNEL_MODE", "off")
+
+
 # ---------------------------------------------------------------------------
 # TEST-C2 – core add / identify behaviour
 # ---------------------------------------------------------------------------
@@ -202,7 +209,9 @@ def test_asnorm_active_only_when_cohort_ge_10(tmp_path):
     )
 
 
-def test_asnorm_single_sample_uses_sample_count_aware_threshold(tmp_path):
+def test_asnorm_single_sample_uses_sample_count_aware_threshold(
+    tmp_path, python_asnorm_oracle
+):
     """A weak AS-norm score for a single-sample speaker must not auto-name."""
     db, _mod = _fresh_db(tmp_path / "vp")
     enroll = _unit_vec(30)
@@ -218,7 +227,9 @@ def test_asnorm_single_sample_uses_sample_count_aware_threshold(tmp_path):
     assert sid is not None  # keeps the intended speaker visible in the fixture
 
 
-def test_asnorm_multi_sample_low_spread_matches_near_base_threshold(tmp_path):
+def test_asnorm_multi_sample_low_spread_matches_near_base_threshold(
+    tmp_path, python_asnorm_oracle
+):
     """Stable multi-sample speakers can still match around the AS-norm base."""
     db, _mod = _fresh_db(tmp_path / "vp")
     enroll = _unit_vec(31)
@@ -239,7 +250,7 @@ def test_asnorm_multi_sample_low_spread_matches_near_base_threshold(tmp_path):
     assert sim == pytest.approx(0.51, abs=1e-9)
 
 
-def test_asnorm_rejects_ambiguous_top_two_margin(tmp_path):
+def test_asnorm_rejects_ambiguous_top_two_margin(tmp_path, python_asnorm_oracle):
     """AS-norm matches need a clear top-1/top-2 separation before auto-naming."""
     db, _mod = _fresh_db(tmp_path / "vp")
     first = _unit_vec(32)
@@ -263,7 +274,7 @@ def test_asnorm_rejects_ambiguous_top_two_margin(tmp_path):
     assert first_id != second_id
 
 
-def test_asnorm_identify_uses_normalized_top_candidate(tmp_path):
+def test_asnorm_identify_uses_normalized_top_candidate(tmp_path, python_asnorm_oracle):
     """AS-norm must choose normalized top-1, not raw cosine top-1."""
     db, _mod = _fresh_db(tmp_path / "vp")
     query = _unit_vec(34)
@@ -288,7 +299,7 @@ def test_asnorm_identify_uses_normalized_top_candidate(tmp_path):
     assert sim == pytest.approx(0.82, abs=1e-9)
 
 
-def test_asnorm_margin_uses_normalized_second_best(tmp_path):
+def test_asnorm_margin_uses_normalized_second_best(tmp_path, python_asnorm_oracle):
     """AS-norm margin must compare against normalized top-2, not raw top-2."""
     db, _mod = _fresh_db(tmp_path / "vp")
     query = _unit_vec(36)
