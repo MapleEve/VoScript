@@ -72,14 +72,150 @@ def test_heavy_first_round_policy_and_manual_target_binding():
         "ready_for_review",
     ]
     assert heavy["on"]["workflow_dispatch"]["inputs"]["ref"]["required"] == "true"
+    assert heavy["permissions"] == {"contents": "read"}
     jobs = heavy["jobs"]
-    assert "REQUESTED_SHA" in str(jobs["resolve-source"])
-    assert "checks" not in jobs["rust-wheel"].get("permissions", {})
+    resolver = jobs["resolve-source"]
+    assert "if" not in resolver
+    assert "github.workflow_sha" in resolver["steps"][0]["with"]["ref"]
+    source = next(step for step in resolver["steps"] if step.get("id") == "source")
+    assert source["env"]["REQUESTED_SHA"] == (
+        "${{ github.event_name != 'workflow_dispatch' && (github.event.pull_request.head.sha || github.sha) || inputs.ref }}"
+    )
+    for name in ("resolve-source", "rust-wheel", "docker-packaging"):
+        assert "checks" not in jobs[name].get("permissions", {})
+    proof_steps = [
+        step
+        for step in resolver["steps"]
+        if step.get("id") == "proof" or "ARTIFACT_ID" in step.get("env", {})
+    ]
+    assert len(proof_steps) == 2
+    for step in proof_steps:
+        assert step["if"] == (
+            "${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}"
+        )
+    for name in ("rust-wheel", "docker-packaging"):
+        assert jobs[name]["steps"][0]["with"]["ref"] == (
+            "${{ needs.resolve-source.outputs.source-sha }}"
+        )
     reporter = jobs["report-target-checks"]
     assert reporter["permissions"]["checks"] == "write"
-    assert "refs/heads/main" in reporter["if"]
+    assert reporter["if"] == (
+        "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.resolve-source.outputs.source-sha != '' }}"
+    )
     assert "head_sha: sha" in str(reporter)
     assert "external_id:" in str(reporter)
+
+
+@pytest.mark.parametrize(
+    "overrides,accepted",
+    [
+        pytest.param({}, True, id="candidate-self"),
+        pytest.param({"REQUESTED_SHA": "b" * 40}, False, id="candidate-other-sha"),
+        pytest.param({"REQUESTED_SHA": ""}, False, id="missing-target"),
+        pytest.param({"REQUESTED_SHA": "a" * 39}, False, id="short-sha"),
+        pytest.param({"REQUESTED_SHA": "main"}, False, id="mutable-target"),
+        pytest.param({"REQUESTED_SHA": "g" * 40}, False, id="invalid-sha"),
+        pytest.param({"GITHUB_WORKFLOW_SHA": "b" * 40}, False, id="workflow-mismatch"),
+        pytest.param({"CHECKOUT_SHA": "b" * 40}, False, id="checkout-mismatch"),
+        pytest.param(
+            {
+                "GITHUB_WORKFLOW_REF": "other/project/.github/workflows/rust-foundation-heavy.yml@refs/heads/candidate"
+            },
+            False,
+            id="other-repository",
+        ),
+        pytest.param(
+            {
+                "GITHUB_WORKFLOW_REF": "example/project/.github/workflows/other.yml@refs/heads/candidate"
+            },
+            False,
+            id="other-workflow",
+        ),
+        pytest.param({"GITHUB_REF": "refs/tags/candidate"}, False, id="tag-dispatch"),
+        pytest.param({"GITHUB_REF": "refs/heads/main"}, True, id="main-self"),
+        pytest.param(
+            {"GITHUB_REF": "refs/heads/main", "REQUESTED_SHA": "b" * 40},
+            True,
+            id="main-other-sha",
+        ),
+        pytest.param(
+            {
+                "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REF": "refs/pull/1/merge",
+                "GITHUB_SHA": "b" * 40,
+                "GITHUB_WORKFLOW_SHA": "b" * 40,
+            },
+            True,
+            id="first-pr-head-not-merge-ref",
+        ),
+        pytest.param(
+            {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"},
+            True,
+            id="main-push",
+        ),
+    ],
+)
+def test_heavy_resolver_executes_exact_source_binding(tmp_path, overrides, accepted):
+    step = next(
+        step
+        for step in workflow("rust-foundation-heavy.yml")["jobs"]["resolve-source"][
+            "steps"
+        ]
+        if step.get("id") == "source"
+    )
+    env = {
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REPOSITORY": "example/project",
+        "GITHUB_REF": "refs/heads/candidate",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_WORKFLOW_SHA": "a" * 40,
+        "CHECKOUT_SHA": "a" * 40,
+        "REQUESTED_SHA": "a" * 40,
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "TRACE": str(tmp_path / "trace"),
+        **overrides,
+    }
+    env.setdefault(
+        "GITHUB_WORKFLOW_REF",
+        f"{env['GITHUB_REPOSITORY']}/.github/workflows/rust-foundation-heavy.yml@{env['GITHUB_REF']}",
+    )
+    # Execute the actual workflow shell, stubbing only git transport and proof writing.
+    stubs = """
+git() {
+  case "$*" in
+    "rev-parse HEAD") printf '%s\\n' "$CHECKOUT_SHA" ;;
+    "cat-file -e $REQUESTED_SHA^{commit}") return 1 ;;
+    "fetch --no-tags origin $REQUESTED_SHA") printf 'fetch\\n' >> "$TRACE" ;;
+    *) return 2 ;;
+  esac
+}
+python() {
+  test "$*" = "voscript-api/scripts/ci_release_contracts.py write-proof" || return 2
+  printf 'proof\\n' >> "$TRACE"
+}
+"""
+    result = subprocess.run(
+        ["bash", "-c", stubs + step["run"]],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert (result.returncode == 0) is accepted, result.stderr
+    output = tmp_path / "output"
+    trace = tmp_path / "trace"
+    if not accepted:
+        assert not output.exists()
+        assert not trace.exists()
+        return
+    assert output.read_text() == f"sha={env['REQUESTED_SHA']}\n"
+    if (
+        env["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+        and env["GITHUB_REF"] == "refs/heads/main"
+    ):
+        assert trace.read_text() == "fetch\nproof\n"
+    else:
+        assert not trace.exists()
 
 
 def test_release_builds_once_then_pushes_the_smoked_image():
@@ -170,6 +306,7 @@ def test_dispatch_from_unreviewed_workflow_or_wrong_path_is_rejected():
     sha, check, run = evidence()
     proof = {"target_sha": sha, "job_results": {"rust-wheel": "success"}}
     run["head_branch"] = "candidate"
+    run["head_sha"] = sha
     assert not contracts.check_evidence(
         check, run, sha, "rust-foundation-heavy.yml", proof
     )
@@ -178,6 +315,25 @@ def test_dispatch_from_unreviewed_workflow_or_wrong_path_is_rejected():
     assert not contracts.check_evidence(
         check, run, sha, "rust-foundation-heavy.yml", proof
     )
+
+
+def test_candidate_dispatch_cannot_supply_release_proof_or_execution(monkeypatch):
+    sha, check, run = evidence()
+    run.update(head_branch="candidate", head_sha=sha)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/project")
+    assert not contracts.check_evidence(check, run, sha, "rust-foundation-heavy.yml")
+    with pytest.raises(ValueError, match="not from main"):
+        contracts.manual_proof(run)
+    monkeypatch.setattr(contracts, "paginated", lambda path, key: [run])
+
+    def reject_candidate_lookup(path):
+        raise AssertionError(
+            f"Candidate must not enter the trusted execution index: {path}"
+        )
+
+    monkeypatch.setattr(contracts, "api", reject_candidate_lookup)
+    with pytest.raises(ValueError, match="No trusted execution"):
+        contracts.latest_execution("rust-foundation-heavy.yml", sha)
 
 
 def test_latest_failed_run_cannot_borrow_old_green_check(monkeypatch):

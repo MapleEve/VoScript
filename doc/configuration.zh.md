@@ -221,6 +221,21 @@ raw-cosine fallback 可用，不能声称 probe 已完整走 AS-norm scoring pat
 验证需要 cohort >=10。公开文档只记录行为结论，不发布真实任务名、样本名、job id、
 speaker id、主机或路径。
 
+## 手动 Heavy CI
+
+Heavy CI 在 PR 的 `opened`、`reopened`、`ready_for_review` 事件和 `main` push
+时自动运行；后续 PR 更新必须显式手动触发。同仓 candidate 自验证时，选择
+candidate 分支作为 workflow ref，并将输入 `ref` 设为其完整 40 位 HEAD SHA。
+workflow SHA、run SHA 和输入 SHA 必须一致。Actions 原生 checks
+（`resolve-source`、`rust-wheel`、`docker-packaging`）归属该 HEAD；candidate
+不获得 `checks: write`，不产生可信 target proof，也不执行 target-check reporter。
+分支更新后必须针对新 SHA 重新手动触发。
+
+只有从 `main` 手动触发时，才允许测试其他精确 target SHA、生成可信 target proof
+和 report checks。candidate run 不能通过发布 verifier；正式发布仍要求已合入
+`main` 的 PR 源码，以及该合并 SHA 的全部 9 项 required checks，不能沿用合并前
+candidate 的绿灯。
+
 ## 相关文档
 
 - [快速上手](./quickstart.zh.md)

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Exact target SHA; run this workflow from main."
+        description: "Exact target SHA; main may test any target, candidate branches only their own HEAD."
         required: true
         type: string
 
@@ -23,7 +23,6 @@ env:
 jobs:
   resolve-source:
     name: resolve-source
-    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       source-sha: ${{ steps.source.outputs.sha }}
@@ -36,19 +35,28 @@ jobs:
       - name: Bind all heavy evidence to the immutable target
         id: source
         env:
-          REQUESTED_SHA: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+          REQUESTED_SHA: ${{ github.event_name != 'workflow_dispatch' && (github.event.pull_request.head.sha || github.sha) || inputs.ref }}
         run: |
           set -euo pipefail
           [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            git cat-file -e "$REQUESTED_SHA^{commit}" || git fetch --no-tags origin "$REQUESTED_SHA"
-            python voscript-api/scripts/ci_release_contracts.py write-proof
+            test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+            test "$GITHUB_WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/rust-foundation-heavy.yml@$GITHUB_REF"
+            if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+              git cat-file -e "$REQUESTED_SHA^{commit}" || git fetch --no-tags origin "$REQUESTED_SHA"
+              python voscript-api/scripts/ci_release_contracts.py write-proof
+            else
+              # Candidate dispatches validate only themselves via native Actions checks.
+              [[ "$GITHUB_REF" == refs/heads/* ]]
+              test "$REQUESTED_SHA" = "$GITHUB_SHA"
+            fi
           else
             test "$(git rev-parse HEAD)" = "$REQUESTED_SHA"
           fi
           echo "sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
       - name: Upload immutable trusted target proof
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
         id: proof
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0, node24
         with:
@@ -58,7 +66,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Anchor proof identity in the trusted resolver job log
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
         env:
           ARTIFACT_ID: ${{ steps.proof.outputs.artifact-id }}
           ARTIFACT_DIGEST: ${{ steps.proof.outputs.artifact-digest }}
