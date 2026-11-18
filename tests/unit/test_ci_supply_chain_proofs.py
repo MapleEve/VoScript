@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import json
@@ -463,6 +464,47 @@ def test_release_revalidation_refreshes_remote_tag_despite_stale_local_green_sou
 def test_candidate_metadata_is_parsed_without_executing_candidate_code():
     source = 'APP_VERSION = "1.2.3"\nraise AssertionError("candidate code executed")\n'
     assert contracts.version_source(source) == "1.2.3"
+
+
+@pytest.mark.parametrize(
+    ("indices", "diagnostic"),
+    [
+        ([1, 0], None),
+        ([0, 1, 2], "added=1 missing=0"),
+        ([0], "added=0 missing=1"),
+        ([0, 2], "added=1 missing=1"),
+    ],
+)
+def test_model_smoke_requires_exact_safe_global_membership(indices, diagnostic):
+    # Execute only the real smoke's snapshots/assertion, without importing Torch.
+    nodes = [
+        node
+        for node in ast.parse(images.MODEL_IMPORT_SMOKE).body
+        if (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id in {"before", "after"}
+                for target in node.targets
+            )
+        )
+        or (
+            isinstance(node, ast.Assert)
+            and {"before", "after"}.issubset(
+                name.id for name in ast.walk(node.test) if isinstance(name, ast.Name)
+            )
+        )
+    ]
+    assert len(nodes) == 3 and isinstance(nodes[-1], ast.Assert)
+    entries = [object(), (object(), "synthetic.alias"), object()]
+    snapshots = iter([entries[:2], [entries[index] for index in indices]])
+    serialization = SimpleNamespace(get_safe_globals=lambda: next(snapshots))
+    namespace = {"torch": SimpleNamespace(serialization=serialization)}
+    code = compile(ast.Module(body=nodes, type_ignores=[]), "safe-global-smoke", "exec")
+    if diagnostic is None:
+        exec(code, namespace)
+    else:
+        with pytest.raises(AssertionError, match=diagnostic):
+            exec(code, namespace)
 
 
 def cuda_inventory():

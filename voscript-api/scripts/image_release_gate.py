@@ -158,11 +158,14 @@ assert callable(Inference) and callable(EncoderClassifier.from_hparams)
 checkpoint = io.BytesIO()
 torch.save({'version': TorchVersion(torch.__version__)}, checkpoint)
 checkpoint.seek(0)
-before = list(torch.serialization.get_safe_globals())
+before = set(torch.serialization.get_safe_globals())
 with _trusted_pyannote_checkpoint_context():
     restored = torch.load(checkpoint, weights_only=True, map_location='cpu')
 assert isinstance(restored['version'], TorchVersion)
-assert torch.serialization.get_safe_globals() == before
+after = set(torch.serialization.get_safe_globals())
+assert after == before, (
+    f'Scoped safe globals changed: added={len(after - before)} missing={len(before - after)}'
+)
 # A tiny local alignment model exercises real Transformers/Torch loading without
 # gated model downloads, credentials, production caches, or GPU allocation.
 config = Wav2Vec2Config(vocab_size=8, hidden_size=16, num_hidden_layers=1,
