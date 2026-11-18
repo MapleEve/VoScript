@@ -43,12 +43,26 @@ def test_core_smoke_round_trips_safe_payload_through_imported_extension():
     assert result["capabilities"]["core_smoke"] is True
 
 
-def test_missing_rust_extension_hard_fails():
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModuleNotFoundError("voscript_core"),
+        ImportError("native import"),
+        OSError("ABI"),
+    ],
+    ids=["missing", "import", "abi"],
+)
+def test_unavailable_rust_extension_hard_fails(error):
     def _missing_importer(module_name):
-        raise ModuleNotFoundError(module_name)
+        assert module_name == "voscript_core"
+        raise error
 
-    with pytest.raises(RustKernelBridgeError, match="required but unavailable"):
+    with pytest.raises(
+        RustKernelBridgeError, match="required but unavailable"
+    ) as exc_info:
         require_rust_core(importer=_missing_importer)
+
+    assert exc_info.value.__cause__ is error
 
 
 def test_core_smoke_call_failure_hard_fails():
