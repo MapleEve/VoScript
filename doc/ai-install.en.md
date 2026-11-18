@@ -49,8 +49,8 @@ Check 1: NVIDIA GPU present?
     $ nvidia-smi
     - works → continue
     - command not found / CUDA unavailable → tell the user "this path needs
-      an NVIDIA GPU + driver"; ask whether to switch to macOS/CPU path or
-      fix the driver first.
+      an NVIDIA GPU + driver"; use a compatible host or fix the driver.
+      Do not substitute an unqualified native CPU installation.
 
 Check 2: enough VRAM?
     $ nvidia-smi --query-gpu=memory.total --format=csv,noheader
@@ -89,8 +89,12 @@ Check 4: HF_TOKEN and gated-model access both in place?
 ### macOS path (Docker Desktop can't pass through the GPU)
 
 Docker Desktop on macOS **cannot forward a GPU into a container** (neither
-CUDA nor Metal). So on macOS **skip docker-compose entirely** — use a
-native venv + CPU instead:
+CUDA nor Metal). The supported 0.8.5 deployment is the CI-built Linux CUDA
+image with Python 3.11, official cu126 wheels, the matching Rust extension,
+and authenticated compatibility adaptations. Prefer a compatible Linux / WSL2
+GPU service host with the Mac as client. Native CPU installs require a separate
+manual port and are not covered by the image compatibility gate; do not deploy
+one automatically or promise the earlier native performance estimates.
 
 ```
 Check A: Python 3.11 available?
@@ -108,14 +112,12 @@ Check C: disk + memory
 Check D: HF acceptance (same as Linux branch)
 ```
 
-On macOS you **must** set:
+For a separately qualified native CPU port, use:
 - `DEVICE=cpu` (pyannote 3.1's MPS coverage is incomplete, don't use it)
 - `WHISPER_MODEL=medium` (large-v3 on CPU isn't "slow", it's "unusable")
 
-And tell the user explicitly:
-> "This Mac will run CPU-only. A minute of audio takes 30 s to 3 min
-> depending on the chip. If you have a Linux or Windows (WSL2) host with
-> an NVIDIA GPU, deploying the service there will be 5–20× faster."
+Explain that these prerequisites alone do not qualify a native deployment.
+See the manual-port boundary below before changing the user's environment.
 
 ## Installing NVIDIA Container Toolkit (if missing)
 
@@ -229,8 +231,10 @@ rm -f .env.bak
 
 ### 3. Launch
 
+Compose defaults to a published image containing the Rust wheel; no local build is needed.
+
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 ### 4. Wait for model downloads
@@ -270,97 +274,24 @@ All three pass → deployment done.
 
 ## Deployment steps (macOS, native venv)
 
-No docker-compose on macOS — start the service from a Python venv.
-All commands run from the **repo root**.
+There is no qualified automatic native installation recipe for this release.
+Installing `app/requirements.txt` alone omits the authenticated legacy
+compatibility adaptations and required Rust wheel. Do not treat successful
+dependency resolution or `/healthz` alone as native compatibility evidence.
 
-### 1. Clone + install deps
+If the user explicitly requests a manual port, first follow the
+[quickstart's qualification boundary](./quickstart.en.md#03-macos-apple-silicon--intel)
+and [Runtime Compatibility Tools](../app/build/README.md). It requires Python
+3.11, platform-compatible Torch / torchaudio / torchvision, the separately
+installed WhisperX package, authenticated compatibility adaptations, and a
+same-source `voscript_core` wheel for the platform and Python ABI. Do not apply
+the Docker-only `+cu126` constraints to macOS / CPU-only hosts, or silently set
+`RUST_KERNEL_MODE=off` to bypass a missing extension.
 
-```bash
-cd ~   # or wherever the user prefers
-git clone https://github.com/MapleEve/voscript.git
-cd voscript
-
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r app/requirements.txt
-# Note: on macOS, torch resolves to the CPU/MPS wheel, not CUDA.
-# Do not install CUDA torch wheels manually on macOS.
-```
-
-### 2. Prepare the runtime env
-
-```bash
-# data directory
-export DATA_DIR="$(pwd)/data"
-mkdir -p "$DATA_DIR"
-
-# credentials (confirm the generated value with the user)
-export API_KEY_VALUE=$(openssl rand -hex 32)
-export HF_TOKEN="${USER_SUPPLIED_HF_TOKEN:?need HF_TOKEN from user}"
-
-# macOS hard requirements
-export DEVICE=cpu
-export WHISPER_MODEL=medium    # do NOT use large-v3
-```
-
-Bundle this into a `run.sh` at the repo root so the user can restart the
-service the same way later:
-
-```bash
-cat > run.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-cd "$(dirname "$0")"
-source .venv/bin/activate
-export DATA_DIR="$(pwd)/data"
-export DEVICE=cpu
-export WHISPER_MODEL=medium
-# The two lines below are filled in at deploy time — do NOT commit them.
-export HF_TOKEN="__FILL_ME__"
-export API_KEY="__FILL_ME__"
-mkdir -p "$DATA_DIR"
-cd app
-exec uvicorn main:app --host 0.0.0.0 --port 8780
-EOF
-chmod +x run.sh
-
-# Fill in token and key safely (Python, single-shot replace — no sed escapes)
-: "${HF_TOKEN:?missing}"
-: "${API_KEY_VALUE:?missing}"
-HF_TOKEN="$HF_TOKEN" API_KEY="$API_KEY_VALUE" python3 - <<'PY'
-import os, pathlib
-p = pathlib.Path("run.sh")
-text = p.read_text()
-text = text.replace("__FILL_ME__", os.environ["HF_TOKEN"], 1)
-text = text.replace("__FILL_ME__", os.environ["API_KEY"], 1)
-p.write_text(text)
-PY
-
-# gitignore it so it can never leak
-grep -q '^run.sh$' .gitignore || echo 'run.sh' >> .gitignore
-```
-
-### 3. Start + verify
-
-```bash
-./run.sh &    # or run it foreground inside tmux/screen
-sleep 30      # wait for the first-time model download (~5 GB)
-
-curl -sf http://localhost:8780/healthz
-# → {"ok":true}
-
-curl -sS http://localhost:8780/api/voiceprints -H "Authorization: Bearer $API_KEY_VALUE"
-# → []
-```
-
-For boot-at-login, the idiomatic Apple Silicon answer is launchd. Offer a
-sample `~/Library/LaunchAgents/com.openplaud.voscript.plist` but
-**don't install it automatically** — let the user opt in.
-
-> Warn the user: the service stops when the Mac sleeps / the lid closes.
-> If it needs to stay up, either disable sleep ("keep awake") or move the
-> deployment to a desktop box.
+Keep existing credentials and runtime data. Qualify real audio I/O, model and
+checkpoint loading, alignment, and a fresh transcription on the target platform
+before offering a launch or autostart recipe. Until then, use the supported
+Linux / WSL2 GPU image path instead.
 
 ## Verify the container is not running as root (added in 0.2.0)
 
@@ -385,8 +316,9 @@ that `nvidia-ctk runtime configure` ran.
 After deployment, give the user a crisp one-shot summary:
 
 1. ✅ **Service URL**: `http://<host-ip-or-domain>:8780`
-2. ✅ **API_KEY**: the value you generated — share it **once**, tell the
-   user to store it safely from here on
+2. ✅ **API_KEY**: have the user read it securely on their own machine and enter
+   it in the client; never echo it in chat, logs, or public output. Keep the
+   existing key during upgrades rather than generating a replacement.
 3. ✅ Ask them to set the following in BetterAINote → Settings →
    Transcription:
    - Private transcription base URL = the URL above
@@ -394,7 +326,7 @@ After deployment, give the user a crisp one-shot summary:
 4. ✅ **Strong reminder**: `:8780` must not be exposed to the public
    Internet directly. Use VPN / reverse proxy with TLS / at least an IP
    allow-list. See [`security.en.md`](./security.en.md).
-5. ✅ Backup reminder: `data/voiceprints/` should be backed up regularly
+5. ✅ Backup reminder: preserve and back up voiceprints, AS-norm cohort, model caches, and data mounts
 
 ## Upgrade flow
 
@@ -405,18 +337,21 @@ cd ~/voscript   # or actual path
 git fetch origin
 git diff --stat main origin/main   # show the user what will change
 git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker logs --tail 40 voscript
 curl -sf http://localhost:8780/healthz
 ```
 
 If `git pull` would overwrite uncommitted local changes, **stop and ask
 the user**. Never `git reset --hard`.
+Back up data first, keep mounts and the existing `API_KEY`, and check whether
+`.env` still pins an older `VOSCRIPT_IMAGE`. Never delete voiceprints, models,
+or the cohort to perform an upgrade.
 
 ## Don't do this
 
-- ❌ Echo `HF_TOKEN` or `API_KEY` anywhere beyond the single hand-off
-  moment (logs, commits, PR descriptions)
+- ❌ Echo `HF_TOKEN` or `API_KEY` in chat, logs, commits, or PR descriptions
 - ❌ `git add .env` (it is gitignored, don't force-add it)
 - ❌ Remove pins in `requirements.txt` to "make it start"
 - ❌ Delete `./models/` to save disk — that's the weight cache, redownload
@@ -438,7 +373,9 @@ the user**. Never `git reset --hard`.
   and cert rotation. Don't patch FastAPI to serve certs itself — too much
   maintenance drag.
 - **"GPU 0 is taken by something else, can we use GPU 1?"**
-  → Edit `CUDA_VISIBLE_DEVICES=1` in `.env`, then restart compose.
+  → Follow the [configuration reference](./configuration.en.md) to add a local
+  Compose override injecting `CUDA_VISIBLE_DEVICES`; editing `.env` alone does
+  not pass that variable into the container.
 
 ## Related docs
 

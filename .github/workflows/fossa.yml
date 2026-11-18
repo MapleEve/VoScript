@@ -20,7 +20,7 @@ jobs:
       - name: Skip when FOSSA_API_KEY is not configured
         if: ${{ env.FOSSA_API_KEY == '' }}
         run: echo "FOSSA_API_KEY is not configured; skipping FOSSA scan."
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, node24
         if: ${{ env.FOSSA_API_KEY != '' }}
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}

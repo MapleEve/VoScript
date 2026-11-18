@@ -10,8 +10,8 @@
 | --- | --- | --- | --- |
 | Linux + NVIDIA GPU | docker-compose（下面主线） | 最好 | 推荐路径，本文档主流程 |
 | Windows 11 + WSL2 + NVIDIA GPU | docker-compose（在 WSL2 里走 Linux 流程） | 最好 | 见 [0.2](#02-windows-11--wsl2) |
-| macOS Apple Silicon（M1/M2/M3/M4） | **native venv，纯 CPU** | 可用但慢 | Docker Desktop 在 macOS **不能透传 GPU**，见 [0.3](#03-macos-apple-silicon) |
-| macOS Intel | native venv，纯 CPU | 可用但非常慢 | 同 macOS Apple Silicon，见 [0.3](#03-macos-apple-silicon) |
+| macOS Apple Silicon（M1/M2/M3/M4） | 原生 CPU 移植，不在镜像门禁覆盖范围内 | 未验收 | 推荐 Linux GPU 主机运行服务，见 [0.3](#03-macos-apple-silicon) |
+| macOS Intel | 原生 CPU 移植，不在镜像门禁覆盖范围内 | 未验收 | 同 Apple Silicon 边界，见 [0.3](#03-macos-apple-silicon) |
 
 CPU / 小显存场景**强烈建议**用 `WHISPER_MODEL=medium`（下面第 2 步会讲），速度差 3~4 倍而中文质量可接受。
 
@@ -27,6 +27,7 @@ CPU / 小显存场景**强烈建议**用 `WHISPER_MODEL=medium`（下面第 2 �
 ## 0.1 Linux + NVIDIA GPU（主线路径）
 
 - Docker 24+
+- NVIDIA 驱动须兼容 CUDA 12.6；发布镜像要求原生 Linux 驱动至少为 560.35.05。
 - **NVIDIA Container Toolkit**（没装的话 compose 启动会报 `could not select device driver`）：
   ```bash
   # 以 Ubuntu 为例
@@ -57,7 +58,7 @@ CPU / 小显存场景**强烈建议**用 `WHISPER_MODEL=medium`（下面第 2 �
 前置：
 - Windows 11 或 Windows 10 21H2+
 - 装了 WSL2 Ubuntu（`wsl --install -d Ubuntu`）
-- Windows 上装了 NVIDIA 驱动 ≥ 470
+- Windows NVIDIA 驱动须支持 WSL2 中的 CUDA 12.6；仅满足早期 GPU 透传下限不够。
 - WSL2 里装了 Docker（要么直接 WSL2 里装 docker，要么在 Windows 装 Docker Desktop 并开启 "Use WSL 2 based engine" + "Enable integration with my default WSL distro"）
 
 之后**所有命令都在 WSL2 的 Ubuntu shell 里执行**，走 [0.1 Linux 的流程](#01-linux--nvidia-gpu主线路径)。验证：
@@ -72,54 +73,26 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 
 ## 0.3 macOS（Apple Silicon / Intel）
 
-**重要**：macOS 上的 Docker Desktop **不能透传 GPU**（无 CUDA、无 Metal），所以 docker-compose 路径在 macOS 上**只能跑 CPU**，跑 `large-v3` 基本不可用。
-走 **native venv + CPU** 路径，并且把模型降到 `medium`。
+**重要**：macOS 上的 Docker Desktop **不能透传 GPU**（无 CUDA、无 Metal）。
+支持的部署路径是 CI 构建的 Linux CUDA 镜像，包含 Python 3.11、官方 cu126 wheel、
+匹配的 Rust 扩展和经过校验的旧依赖兼容适配。推荐在兼容的 Linux / WSL2 GPU
+主机上运行服务，Mac 只当客户端。
 
-前置：
-- Python 3.11（推荐 `brew install python@3.11`）
-- ffmpeg（`brew install ffmpeg`）
-- libsndfile（`brew install libsndfile`）
-- 至少 16 GB 内存（Apple Silicon 统一内存也算）
+原生 macOS / CPU 安装不在发布镜像兼容门禁覆盖范围内。
+`pip install -r app/requirements.txt` **不是**完整原生安装配方；手工移植必须单独核验：
 
-```bash
-# 1. 克隆
-git clone https://github.com/MapleEve/voscript.git
-cd voscript
+- Python 3.11、ffmpeg、libsndfile，以及满足 `app/requirements.constraints.txt`
+  的目标平台 Torch / torchaudio / torchvision wheel。
+- 额外安装 WhisperX `3.3.1`，并完成[运行时兼容工具](../app/build/README.md)
+  所述的经过校验的兼容适配；仅安装 requirements 不会应用这些适配。
+- 用 Rust 和 maturin 从相同源码版本构建匹配目标平台与 Python ABI 的
+  `voscript_core` wheel，保持 `RUST_KERNEL_MODE=required`。
+- 在目标平台验证真实音频 I/O、模型/checkpoint 加载、alignment 及全新转写后，
+  才能把移植视为可用。
 
-# 2. 建 venv（在仓库根目录）
-python3.11 -m venv .venv
-source .venv/bin/activate
-
-# 3. 装依赖（macOS 上 torch 会自动装 CPU/MPS 版，不是 CUDA 版）
-pip install --upgrade pip
-pip install -r app/requirements.txt
-
-# 4. 配置环境变量
-export HF_TOKEN=hf_你的_token
-export API_KEY=$(openssl rand -hex 32)
-export DEVICE=cpu                 # macOS 必须 cpu（MPS 对 pyannote 支持不完整）
-export WHISPER_MODEL=medium       # CPU 跑 large-v3 太慢
-export DATA_DIR=$(pwd)/data
-mkdir -p "$DATA_DIR"
-
-# 记住这个 API_KEY，BetterAINote 要填一样的
-
-# 5. 启动
-cd app
-uvicorn main:app --host 0.0.0.0 --port 8780
-```
-
-预期性能（参考值）：
-- M2 Pro / M3 Pro + `medium` + 1 分钟音频 ≈ 30–60 秒
-- M1 / Intel + `medium` + 1 分钟音频 ≈ 1.5–3 分钟
-- 跑 `large-v3` CPU 版会慢 3~5 倍，**不建议**
-
-已知限制：
-- 不支持 docker-compose 路径
-- 不支持 MPS 加速（pyannote 3.1 在 MPS 上有未实现算子，会报错或悄悄回落 CPU）
-- 如果你有一台带 NVIDIA GPU 的 Linux / Windows 机器，强烈建议用那台跑服务，Mac 只当客户端
-
-macOS 跑起来之后的流程（配置、对接 BetterAINote）和下面一致，但 **跳过** docker 相关步骤。
+macOS / CPU-only 系统不要使用 `requirements.docker.constraints.txt` 或 `+cu126`
+wheel。平台无关 constraints 本身不构成原生兼容证明；本文不提供已验收的原生启动
+配方，也不作原生性能承诺。
 
 ## 1. 克隆仓库
 
@@ -166,35 +139,44 @@ HF_ENDPOINT=https://hf-mirror.com
 | `MAX_UPLOAD_BYTES` | `2147483648`（2 GiB） | 单次上传最大字节数；超了直接 `HTTP 413` |
 | `APP_UID` | `1000` | 容器以此 uid 运行，必须和宿主 `DATA_DIR` 的所有者一致 |
 | `APP_GID` | `1000` | 同上，group id |
-| `JOBS_MAX_CACHE` | `200` | 内存 job 字典 LRU 上限；超出后最旧的 job 从内存淘汰（磁盘 status.json 仍可查） |
+| `JOBS_MAX_CACHE` | `200` | 终态 job 的内存缓存上限；活跃任务不受该缓存淘汰影响，终态记录仍可从磁盘查询 |
+| `TRANSCRIPTION_MAX_ACTIVE_JOBS` | `200` | 未完成任务接纳上限；满时新任务返回 `503`，`0` 关闭限制 |
+| `TRANSCRIPTION_MAX_IN_FLIGHT_JOBS` | `4` | 唯一音频 hash 的进行中任务上限；不是 GPU 并行度，`0` 关闭限制 |
+| `TRANSCRIPTION_MIN_FREE_DISK_BYTES` | `1073741824` | 新任务接纳要求数据磁盘至少有 1 GiB 空闲；`0` 关闭检查 |
+| `RUST_KERNEL_MODE` | `required` | 所选 Rust 路径必须可用；缺失或执行失败时拒绝执行，`off` 只供显式 Python 回退 |
 | `FFMPEG_TIMEOUT_SEC` | `1800` | ffmpeg 转码超时秒数；超时返回 504，防止畸形音频卡死进程 |
 | `CUDA_VISIBLE_DEVICES` | 未设置 | 可选 NVIDIA 可见卡限制；默认不注入该变量，compose 请求 Docker 暴露的所有 GPU。需要限制时通过 `docker-compose.override.yml` 或显式 operator env 注入；设置后容器内 `cuda:N` 会按可见集合重映射，不一定等于宿主物理 GPU 编号 |
 | `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU 模型空闲卸载超时，默认 180 秒（3 分钟）；设为 `0` 可关闭空闲卸载并保持模型常驻。开启时，ASR、diarization、embedding 在下一次各自 lazy load 时分别重新选择最佳可见 CUDA 设备 |
 | `ALLOW_NO_AUTH` | `0` | 设为 1 可在未配置 API_KEY 时抑制启动警告（明确确认无鉴权模式） |
 | `DENOISE_MODEL` | `none` | 服务端默认降噪后端：`none`、`deepfilternet` 或 `noisereduce`；API 可按单次任务覆盖 |
-| `DENOISE_SNR_THRESHOLD` | `10.0` | DeepFilterNet SNR 门限（dB）；选择 `deepfilternet` 时，音频信噪比达到或高于该值会跳过 DeepFilterNet；`noisereduce` 不受此 gate 控制 |
+| `DENOISE_SNR_THRESHOLD` | `10.0` | DeepFilterNet SNR 门限（dB）；选择 `deepfilternet` 时，音频信噪比达到或高于该值会跳过 DeepFilterNet；`noisereduce` 不受 SNR gate 控制 |
+| `DENOISE_MAX_AUDIO_DURATION_SEC` | `7200` | 超长或时长未知时跳过可选降噪并继续任务；`0` 仅取消已知时长上限 |
 | `VOICEPRINT_THRESHOLD` | `0.75` | raw cosine 声纹匹配基础阈值，实际会按每位说话人自适应调整 |
 | `PYANNOTE_MIN_DURATION_OFF` | `0.5` | pyannote 停顿合并参数，用于减少短暂停顿导致的过度切分 |
 | `MIN_EMBED_DURATION` | `1.5` | 提取 speaker embedding 时接受的最短 diarization turn 时长 |
 | `MAX_EMBED_DURATION` | `10.0` | 提取 speaker embedding 时单个 turn 使用的最长音频窗口 |
+| `EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC` | `1800` | 超过此音频时长不预载整段，改按选中片段读取；不是执行超时，`0` 取消已知时长音频的预载上限 |
 | `WHISPERX_ALIGN_DISABLED_LANGUAGES` | 空 | 逗号分隔的显式跳过 forced alignment 语言；只建议作为临时运营降级开关 |
 | `WHISPERX_ALIGN_DEVICE` | `cpu` | WhisperX forced alignment 运行设备；默认 CPU，避免 alignment 与 GPU ASR / speaker embedding 运行时互相影响 |
 | `WHISPERX_ALIGN_MODEL_MAP` | 空 | 逗号分隔的 `lang=model` 覆盖，例如 `zh=your-org/your-zh-align-model` |
 | `WHISPERX_ALIGN_MODEL_DIR` | 空 | 可选 alignment 模型缓存目录；当前 WhisperX 支持时会透传 |
-| `WHISPERX_ALIGN_CACHE_ONLY` | `0` | 设为 1 时，在当前 WhisperX 版本支持的情况下只从缓存加载 alignment 模型 |
+| `WHISPERX_ALIGN_CACHE_ONLY` | `0` | 设为 1 时 alignment 模型仅从本地缓存加载；缓存不完整则降级，不下载补齐 |
+| `WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC` | `7200` | 超长或时长未知时跳过 alignment 并保留转写；`0` 仅取消已知时长上限 |
 
 对 `POST /api/transcribe` 来说，省略 `denoise_model` 表示使用服务端
 `DENOISE_MODEL` 默认值；显式传 `denoise_model=none` 才表示本次请求关闭降噪。
 显式传 `snr_threshold` 时，会只对本次请求覆盖 `DENOISE_SNR_THRESHOLD`。
-该门限只影响 `deepfilternet`；`noisereduce` 一旦被选择就会运行。
+该门限只影响 `deepfilternet`；两种降噪后端都受音频时长保护。
 所有可用配置项、哪些 Whisper / ASR 参数尚未暴露为 env，以及 AS-norm cohort
 保护语义，见 [`configuration.zh.md`](./configuration.zh.md)。
 
 中文词级 alignment 默认会尝试执行，并默认在 CPU 上运行，以避免 wav2vec2
 alignment 与 GPU ASR / speaker embedding 运行时互相影响。Docker 镜像使用
-PyTorch 2.6.0，可满足 transformers 新安全检查对默认中文 `.bin` alignment 权重的
-加载要求。如果你使用自定义镜像且 torch 低于 2.6，请升级到 torch>=2.6，或改用
-提供 safetensors 的可信替代 alignment 模型；只有确认要临时降级到段级时间戳时，
+Python 3.11 与[运行时约束](../app/requirements.docker.constraints.txt)中指定的官方
+CUDA 12.6 wheel，保留默认中文 `.bin` alignment 权重所需的 checkpoint 安全加载
+版本下限。自定义镜像应保持当前依赖约束，
+或使用提供 safetensors 的可信替代 alignment 模型，不要关闭 checkpoint 安全检查；
+只有确认要临时降级到段级时间戳时，
 才设置 `WHISPERX_ALIGN_DISABLED_LANGUAGES=zh`。
 
 ### 宿主目录所有者
@@ -212,9 +194,15 @@ echo "APP_GID=$(id -g)" >> .env
 
 ## 3. 启动服务
 
+Compose 默认使用 `VOSCRIPT_IMAGE=ghcr.io/mapleeve/voscript:v0.8.5` 发布镜像，
+其中已包含 `voscript_core` wheel；普通安装不需要 Rust 工具链或本地编译。
+默认 `RUST_KERNEL_MODE=required`，所选 Rust 路径不可用时拒绝执行，不会静默回退。
+
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+需要固定其它已发布 tag 或 digest 时，在 `.env` 设置 `VOSCRIPT_IMAGE`。
 
 第一次跑要下约 **5 GB** 的模型权重到 `./models/`，可以用下面这句跟进度：
 
@@ -224,13 +212,17 @@ docker logs -f voscript
 
 看到 `Uvicorn running on http://0.0.0.0:8780` 就说明起来了。
 
-也可以直接用仓库自带的脚本一把梭：
+### 可选：源码镜像构建
+
+构建前将与目标 Linux 架构、Python 3.11 和源码版本匹配的 `voscript_core` wheel
+放入 `app/.wheelhouse/`。不要将 macOS wheel 用于 Linux 镜像，也不要省略 wheel
+后把 Python-only 镜像当成默认可用安装。为本地构建使用独立镜像名：
 
 ```bash
-./scripts/deploy.sh
+VOSCRIPT_IMAGE=voscript-local:dev docker compose up -d --build --pull never
 ```
 
-脚本会检查 `.env`、启容器、并等 `/healthz` 返回健康。
+原生源码安装的手工移植验收边界见上面的 macOS 小节。
 
 ## 4. 验证部署
 
@@ -259,13 +251,19 @@ curl -sS http://localhost:8780/api/voiceprints \
 
 ## 升级
 
+先备份并保留既有数据目录（包括声纹库和 AS-norm cohort）与模型缓存，保持挂载位置
+不变；0.8.4 升到 0.8.5 不需要清空声纹或重建 cohort。源码构建需先更新匹配版本的
+Rust wheel；使用发布镜像时确认 `.env` 未固定旧 `VOSCRIPT_IMAGE`，或更新为目标 tag / digest。
+不要为升级删除数据卷或模型缓存。
+
 ```bash
 cd voscript
 git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-模型权重被缓存到 `./models/`，重建镜像不会重新下载。
+模型权重被缓存到 `./models/`；保留该挂载后，更换或重建镜像不会清空缓存。
 
 ### 从 0.2.x 升到 0.3.0
 
@@ -305,6 +303,7 @@ docker compose up -d --build
 访问到 `:8780`（防火墙、docker 网络）。
 
 ### 我要备份什么
-→ 只用备份 `data/voiceprints/`。其他东西丢了都能从原始音频重建。
+→ 保留完整数据目录（包括声纹、转写及持久化 AS-norm cohort）、模型缓存和私有
+操作者配置。升级时不要删除这些内容，凭据须保持私有。
 
 更多线上风险看 [`security.zh.md`](./security.zh.md)。

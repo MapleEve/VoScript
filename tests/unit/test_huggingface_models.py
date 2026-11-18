@@ -536,7 +536,7 @@ def test_embedding_loader_uses_cache_resolved_model_reference(monkeypatch, tmp_p
             return cls()
 
         def to(self, device):
-            calls.append(("to", device))
+            calls.append(("to", str(device)))
             return self
 
     class FakeInference:
@@ -587,7 +587,7 @@ def test_embedding_loader_keeps_hub_repo_id_reference(monkeypatch):
             return cls()
 
         def to(self, device):
-            calls.append(("to", device))
+            calls.append(("to", str(device)))
             return self
 
     class FakeInference:

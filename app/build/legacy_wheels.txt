@@ -1,0 +1,15 @@
+# Published wheel SHA256 values, not sdist hashes. The two pyannote filenames
+# are distinct upstream uploads of 3.3.2; only these artifacts are accepted.
+# https://pypi.org/project/pyannote-audio/3.3.2/#files
+pyannote.audio==3.3.2 \
+    --hash=sha256:23e0dcedda920cb2e154e146bcd9663289ee7942d0e012663dad76f2e571ebeb \
+    --hash=sha256:599c694acd5d193215147ff82d0bf638bb191204ed502bd9fde8ff582e20aa1c
+# https://pypi.org/project/speechbrain/1.1.2/#files
+speechbrain==1.1.2 \
+    --hash=sha256:9fea4144c917ea58bcf13f17a1a1759179ed7472a30ec8416e7c7c8cf21d9c9a
+# https://pypi.org/project/deepfilternet/0.5.6/#files
+deepfilternet==0.5.6 \
+    --hash=sha256:99f5688d954fcfa8f853bf8bb8c3b2a59e4f9dc5d95643c9e6a32053234ba7c6
+# https://pypi.org/project/torch-audiomentations/0.12.0/#files
+torch-audiomentations==0.12.0 \
+    --hash=sha256:1b80b91d2016ccf83979622cac8f702072a79b7dcc4c2bee40f00b26433a786b

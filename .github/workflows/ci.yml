@@ -6,50 +6,100 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   public-release-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, node24
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0, node24
         with:
           python-version: "3.11"
-      - name: Run public release scan
-        run: python voscript-api/scripts/public_release_scan.py --root .
+      - run: python voscript-api/scripts/public_release_scan.py --root .
+
+  architecture-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, node24
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0, node24
+        with:
+          python-version: "3.11"
+      - run: python voscript-api/scripts/ci_release_contracts.py architecture
+
+  docs-code-drift-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, node24
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0, node24
+        with:
+          python-version: "3.11"
+      - run: python voscript-api/scripts/ci_release_contracts.py docs
 
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, node24
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0, node24
         with:
           python-version: "3.11"
-          cache: pip
-      - run: pip install ruff
-      - run: ruff check app/ --ignore E501
-      - run: ruff format --check app/
+      - run: python -m pip install ruff==0.17.5
+      - run: ruff --version
+      - run: ruff check app/ voscript-api/scripts/ --ignore E501
+      - run: ruff format --check app/ voscript-api/scripts/
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, node24
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0, node24
         with:
           python-version: "3.11"
-          cache: pip
-      - name: Install lightweight test dependencies (no GPU packages)
-        run: pip install pytest pytest-cov fastapi httpx numpy aiofiles starlette python-multipart
+      - name: Install real CPU-only Torch for audio-I/O regressions
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0 torchaudio==2.11.0
+      - name: Install test dependencies (no GPU packages)
+        run: pip install pytest pytest-cov coverage fastapi httpx numpy aiofiles starlette python-multipart pyyaml "soundfile>=0.13,<0.14"
+      - name: Initialize combined coverage data
+        run: python -m coverage erase
       - name: Run tests
         env:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          # This step is the Python oracle only; native required paths run in heavy/release images.
+          RUST_KERNEL_MODE: "off"
+          PYTHONPATH: ${{ github.workspace }}/voscript-api/scripts
+          CI_REQUIRE_CPU_WHEEL: "1"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
         run: |
           pytest tests/unit/ tests/test_security.py tests/test_voiceprint_db.py tests/test_job_service.py \
-            -p pytest_cov \
-            -v --tb=short --no-header \
-            --cov=app --cov-report=xml:coverage.xml \
-            --junitxml=junit.xml
+            -p ci_real_audio -p pytest_cov -v --tb=short --no-header \
+            --cov=app --cov-append --cov-report= --junitxml=junit.xml
+      - name: Real audio-I/O compatibility without conftest
+        run: PYTHONPATH=app python -m coverage run --append --source=app tests/compat/test_security_audio_io.py
+      - name: Export combined coverage after real audio-I/O tests
+        run: python -m coverage xml -o coverage.xml
+      - name: Preserve CI evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0, node24
+        with:
+          name: unit-evidence-${{ github.sha }}
+          path: |
+            coverage.xml
+            junit.xml
+          if-no-files-found: error
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0, composite with pinned node24 github-script
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
@@ -57,7 +107,7 @@ jobs:
           fail_ci_if_error: false
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./junit.xml
@@ -68,14 +118,16 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, node24
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0, node24
         with:
           python-version: "3.11"
-      - name: Install pip-audit
-        run: pip install pip-audit
-      - name: Run pip-audit
+      - run: pip install pip-audit
+      - name: Audit resolved requirements (image inventory is also required by heavy gate)
+        run: pip-audit -r app/requirements.txt
+      - name: Audit actual locked Rust dependencies
         run: |
-          pip-audit -r app/requirements.txt \
-            --ignore-vuln PYSEC-2022-42969 \
-            --ignore-vuln CVE-2026-1839
+          cargo install cargo-audit --locked
+          cargo audit --file Cargo.lock --deny warnings

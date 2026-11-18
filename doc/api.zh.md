@@ -57,7 +57,7 @@ curl http://localhost:8780/healthz
 | `min_speakers` | int | 选填，`0` 表示自动 |
 | `max_speakers` | int | 选填，`0` 表示自动 |
 | `denoise_model` | string | 选填。降噪后端：`none`、`deepfilternet`、`noisereduce`。省略时使用服务端 `DENOISE_MODEL`（默认 `none`）；显式传 `none` 表示只对本次请求关闭降噪。 |
-| `snr_threshold` | float | 选填。DeepFilterNet 信噪比门限（dB），仅对本次请求生效。选择 `deepfilternet` 时，音频信噪比达到或超过此值会跳过 DeepFilterNet。覆盖 `DENOISE_SNR_THRESHOLD`（默认 `10.0`）；`noisereduce` 不使用该 gate。 |
+| `snr_threshold` | float | 选填。DeepFilterNet 信噪比门限（dB），仅对本次请求生效。选择 `deepfilternet` 时，音频信噪比达到或超过此值会跳过 DeepFilterNet。覆盖 `DENOISE_SNR_THRESHOLD`（默认 `10.0`）；`noisereduce` 不受 SNR gate 控制，但仍受服务级音频时长保护。 |
 | `no_repeat_ngram_size` | int | 选填，默认 `0`（不开启）。设置 ≥ 3 时抑制转录中的 n-gram 重复（如「比如比如」→「比如」）。值 < 3 等同于 `0`。非整数返回 422。 |
 响应（200）：
 
@@ -94,15 +94,22 @@ curl http://localhost:8780/healthz
 同时把半截文件从 `data/uploads/` 删掉。用不了那么大空间的小机器可以在
 `.env` 里把 `MAX_UPLOAD_BYTES` 调小（单位字节）。
 
-**文件名**：multipart 里带的 `filename` 会先过
-`PurePosixPath(filename).name`，只保留最末一段——客户端传
-`filename=../../etc/passwd.wav` 也只会在磁盘上落为
-`tr_<id>_passwd.wav`。
+**文件名**：multipart 里的 `filename` 会同时按 POSIX 和 Windows 分隔符取
+basename，包括盘符和 UNC 路径；控制字符会清洗，剩余冒号替换为下划线。
+`filename=../../etc/passwd.wav` 或 Windows fake-path 上传都只会把清洗后的
+basename 加在 job 前缀后保存，例如 `tr_<id>_passwd.wav`。
 
 **503 场景**：`POST /api/transcribe` 也可能在真正开始处理前失败：
 
-- `503 Failed to persist job state — disk error, retry later`
-- `503 Failed to start background transcription — retry later`
+- `503 active_job_budget_exceeded` / `in_flight_job_budget_exceeded`：新任务超过接纳上限。
+- `503 data_disk_pressure` / `data_disk_unavailable`：数据磁盘空间不足或无法读取空间信息。
+- `503 Failed to persist job state; retry later`
+- `503 Failed to start background transcription; retry later`
+
+默认接纳上限为 200 个未完成任务、4 个唯一音频 hash 的进行中任务，数据磁盘至少
+保留 1 GiB 空闲。上传仍先受单文件大小限制；上传保存与 hash 去重后才做新任务接纳。
+命中已完成或进行中去重时复用旧任务，不占新的接纳名额；被拒的新任务会清理本次上传。
+客户端可在容量或磁盘恢复后退避重试，不要把 `503` 当成已成功创建任务。
 
 示例：
 
@@ -119,7 +126,8 @@ curl -X POST http://localhost:8780/api/transcribe \
 `denoise_model` 表示继承 `DENOISE_MODEL`；传 `denoise_model=none` 表示本次请求关闭降噪；
 只有当单个任务需要不同门限时才传 `snr_threshold`，它会覆盖
 `DENOISE_SNR_THRESHOLD`。这个门限只影响 `deepfilternet`；选择 `noisereduce` 时，
-该后端会直接运行。
+该后端不受 SNR gate 控制，但两种降噪都受 `DENOISE_MAX_AUDIO_DURATION_SEC`
+保护：音频超过默认 7200 秒时跳过降噪，继续使用未降噪音频，而不是任务超时失败。
 
 ### `GET /api/jobs/{id}` — 查询任务
 
@@ -250,6 +258,14 @@ alignment 模型会记录为 `jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-c
 如果自定义旧运行时被 transformers 的 `torch.load` 安全检查拦截，`reason` 会是
 `torch_version_blocked`，而不是 `not_found`。这里不会暴露 token、host 或本地路径。
 
+音频超过 `WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC`（默认 7200 秒）时会在整段加载前
+跳过 alignment，记录 `status=skipped, reason=duration_budget_exceeded`，保留已有转写。
+这不是执行超时；`words` 仍是可选字段。时长元数据不可读或无效时，也会在模型和整段
+音频加载前跳过，记录 `status=skipped, reason=audio_duration_unavailable` 与
+`duration_s=null`，保留转写结果和独立 speaker cluster。即使已知时长上限设为 `0`，
+未知时长保护仍有效。`WHISPERX_ALIGN_CACHE_ONLY=1` 仅约束
+alignment 模型加载，缓存不足时不联网补齐，也不代表整个转写流水线已离线。
+
 **`params`** 记录本次任务实际采用的处理参数，包含所有请求级覆盖值，使每条结果
 都可独立解读，无需再查原始请求。各配置项来源和默认值见
 [`configuration.zh.md`](./configuration.zh.md)。
@@ -293,6 +309,13 @@ artifact。当前稳定项包括主结果 `result.json` 和每个说话人 clust
 
 与 `GET /api/jobs/{id}` 不同，本端点始终从磁盘读取持久化结果，**进程重启后仍可访问**，
 也能反映最新的人工纠错；`/api/jobs/{id}` 优先读内存，内存未命中时才回落到磁盘（见上方注意事项）。
+
+### `GET /api/transcriptions/{tr_id}/audio` — 下载原始音频
+
+只返回该转录持久化 `filename` 对应、位于上传目录内的文件。文件名必须是单个
+安全 basename；目录片段、反斜杠、冒号、空值或控制字符返回 `400`，不会把持久化的
+不安全名称归一成另一个文件的 basename；解析后逃出上传目录也被拒绝。
+转录或原始音频不存在时返回 `404`。
 
 ### `GET /api/export/{tr_id}` — 导出
 
@@ -430,7 +453,7 @@ embedding，或源数量少于当前 cohort，后台线程会保留现有 `asnor
 | 401 | 缺 API key / key 不对 |
 | 404 | tr_id / speaker_id / embedding 不存在 |
 | 413 | 上传超过 `MAX_UPLOAD_BYTES`（默认 2 GiB），详见 `/api/transcribe` |
-| 503 | 初始 `queued` 状态落盘失败，或后台转录线程启动失败 |
+| 503 | 新任务接纳预算或磁盘检查拒绝、初始 `queued` 状态落盘失败，或后台转录线程启动失败 |
 | 500 | 服务端异常（看 `docker logs voscript`） |
 | 504 | ffmpeg 转码超时（超过 `FFMPEG_TIMEOUT_SEC`，默认 1800 秒） |
 

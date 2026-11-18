@@ -332,24 +332,24 @@ def test_orphan_job_marked_failed_on_recover(job_service, tmp_path):
 
 
 def test_job_lru_eviction(job_service):
-    """Exceeding maxsize must evict the oldest entry, not grow unboundedly."""
+    """Exceeding maxsize must evict the oldest terminal history entry."""
     LRUCls = job_service._LRUJobsDict
     cache = LRUCls(maxsize=3)
 
-    cache["a"] = {"status": "queued"}
-    cache["b"] = {"status": "queued"}
-    cache["c"] = {"status": "queued"}
+    cache["a"] = {"status": "completed"}
+    cache["b"] = {"status": "completed"}
+    cache["c"] = {"status": "completed"}
     assert "a" in cache and "b" in cache and "c" in cache
 
     # 4th insert — oldest ("a") must be evicted.
-    cache["d"] = {"status": "queued"}
+    cache["d"] = {"status": "completed"}
     assert "a" not in cache, "LRU must evict the oldest entry"
     assert all(k in cache for k in ("b", "c", "d"))
 
     # Touching an existing key moves it to the end → it survives the next
     # eviction round.
-    cache["b"] = {"status": "updated"}
-    cache["e"] = {"status": "queued"}
+    cache["b"] = {"status": "failed"}
+    cache["e"] = {"status": "completed"}
     assert "c" not in cache, "after touching 'b', 'c' is now the oldest"
     assert all(k in cache for k in ("b", "d", "e"))
 

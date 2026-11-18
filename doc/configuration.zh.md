@@ -2,7 +2,7 @@
 
 **简体中文** | [English](./configuration.en.md)
 
-本文是 VoScript v0.8.4 的公开配置索引，覆盖当前代码已经读取并生效的
+本文是 VoScript v0.8.5 的公开配置索引，覆盖当前代码已经读取并生效的
 环境变量、`POST /api/transcribe` 的请求级覆盖语义，以及还没有暴露为稳定
 配置项的内部默认值。没有在本文列出的 Whisper / diarization / AS-norm 变量，
 不要假定已经可用。
@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | API 请求字段 | `denoise_model=deepfilternet`、`snr_threshold=8` | 只影响本次任务，优先于服务端 env |
 | 容器环境变量 | `.env` 经 `docker-compose.yml` 注入容器 | 服务级默认值 |
-| 代码默认值 | `app/config.py` | env 为空或非法时回退 |
+| 代码默认值 | `app/config.py` | 未设置 env 时使用；空值和非法值的处理因配置项而异 |
 
 `POST /api/transcribe` 当前只暴露 `language`、`min_speakers`、`max_speakers`、
 `denoise_model`、`snr_threshold` 和 `no_repeat_ngram_size`。其它 pipeline
@@ -27,6 +27,7 @@
 | `ALLOW_NO_AUTH` | `0` | 仅在 `API_KEY` 为空时使用。设为 `1` 只是确认无鉴权运行并抑制启动警告，不会开启任何额外保护。 |
 | `CORS_ALLOW_ORIGINS` | `*` | 逗号分隔的 CORS 允许源。公网部署建议收窄。 |
 | `HOST_PORT` | `8780` | compose 发布到宿主机的端口；不是应用内部 env。 |
+| `VOSCRIPT_IMAGE` | `ghcr.io/mapleeve/voscript:v0.8.5` | Compose 使用的发布镜像，可覆盖为兼容的已发布 tag 或 digest；普通安装无需本地构建。 |
 | `MAX_UPLOAD_BYTES` | `2147483648` | 单次上传最大字节数，超过后返回 `413` 并清理半截文件。 |
 | `DATA_DIR` | `/data` | 容器内数据根目录；转写结果、上传文件、声纹库都在这里。compose 默认把宿主 `./data` 挂载到 `/data`。 |
 | `MODEL_CACHE_DIR` | `./models` | compose 用的宿主模型缓存目录，挂载到容器 `/cache` 和只读 `/models`。 |
@@ -34,11 +35,14 @@
 | `DEVICE` | `cuda` | pipeline 推理设备。CPU/macOS/无 NVIDIA 环境设为 `cpu`。 |
 | `CUDA_VISIBLE_DEVICES` | 未设置 | 可选 NVIDIA 可见卡限制。默认不注入该变量，compose 会请求 Docker 暴露的所有可用 GPU。只有需要把容器限制到某些卡时，才通过 `docker-compose.override.yml` 或显式 operator env 注入；容器内 `cuda:0` 是可见集合的第 0 张，不一定等于宿主物理 GPU0。CPU-only 请设置 `DEVICE=cpu`。 |
 | `FFMPEG_TIMEOUT_SEC` | `1800` | ffmpeg 转码超时秒数，超时返回 `504`。 |
-| `JOBS_MAX_CACHE` | `200` | 内存 job LRU 上限；被淘汰的完成任务仍可从磁盘 `status.json` / `result.json` 查询。 |
+| `JOBS_MAX_CACHE` | `200` | 终态 job 的内存历史缓存上限；活跃任务不因该上限被淘汰。被淘汰的终态任务仍可从磁盘 `status.json` / `result.json` 查询。 |
+| `TRANSCRIPTION_MAX_ACTIVE_JOBS` | `200` | 未完成转写任务的接纳上限，包含排队与执行中的任务；达到上限时新任务返回 `503`。设为 `0` 关闭该限制。 |
+| `TRANSCRIPTION_MAX_IN_FLIGHT_JOBS` | `4` | 按唯一音频 hash 计数的进行中任务上限，不表示可同时执行 4 个 GPU 任务；达到上限时新任务返回 `503`。设为 `0` 关闭该限制。 |
+| `TRANSCRIPTION_MIN_FREE_DISK_BYTES` | `1073741824` | 新任务接纳要求数据磁盘至少剩余 1 GiB；不足时返回 `503` 并清理本次上传。设为 `0` 关闭该检查；不是磁盘空间预留。 |
 | `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU 模型空闲卸载超时，默认 180 秒（3 分钟）。设为 `0` 可关闭空闲卸载并保持模型常驻。开启后，只有串行 GPU 运行时空闲达到该秒数才释放已加载模型；下一次 reload 时 ASR、diarization 和 embedding 会在各自 lazy load 时分别选择当前可见 CUDA 中空闲显存最多的设备。 |
-| `RUST_KERNEL_MODE` | `off` | 可选 Rust-backed provider/kernel 路径开关。`off` 保持 Python 实现；`required` 要求被选择的 Rust-backed 路径可导入并执行，缺失或调用失败时 fail closed。当前被选择的路径是声纹计分、结果后处理和 artifact manifest helper contract；默认关闭时，CI / Docker packaging 仍会直接验证 Rust 扩展。 |
+| `RUST_KERNEL_MODE` | `required` | 所选 Rust-backed 声纹计分、结果后处理和 artifact manifest helper 路径必须成功导入并执行，否则 fail closed。`off` 仅供显式回退到 Python 实现，不再是默认值。 |
 
-`MODELS_DIR` 和 `LANGUAGE` 在配置模块里有定义，但 v0.8.4 的主 HTTP 转写路径
+`MODELS_DIR` 和 `LANGUAGE` 在配置模块里有定义，但当前主 HTTP 转写路径
 没有把它们作为稳定公开调参入口使用：Whisper 本地 checkpoint 查找仍使用
 `/models/faster-whisper-<WHISPER_MODEL>`，语言默认请通过请求字段 `language`
 控制或留空自动检测。
@@ -90,7 +94,7 @@ Hugging Face snapshot，缓存不完整时再走 Hub。
 
 当前内部 ASR 默认值：`beam_size=5`、`vad_filter=True`、
 `vad_parameters.min_silence_duration_ms=500`、`condition_on_previous_text=False`。
-这些值在 v0.8.4 还没有对应 env 或 API 字段；不要写 `WHISPER_BEAM_SIZE`、
+这些值还没有对应 env 或 API 字段；不要写 `WHISPER_BEAM_SIZE`、
 `WHISPER_COMPUTE_TYPE`、`WHISPER_VAD_*` 之类未实现配置。
 
 ## 降噪
@@ -98,13 +102,14 @@ Hugging Face snapshot，缓存不完整时再走 Hub。
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |
 | `DENOISE_MODEL` | `none` | 服务端默认降噪后端：`none`、`deepfilternet`、`noisereduce`。未知值会记录警告并跳过降噪。 |
-| `DENOISE_SNR_THRESHOLD` | `10.0` | DeepFilterNet 的 SNR 门限 dB。选择 `deepfilternet` 时，估算 SNR 大于等于该值会跳过，避免处理干净录音；`noisereduce` 不使用该 gate。 |
+| `DENOISE_SNR_THRESHOLD` | `10.0` | DeepFilterNet 的 SNR 门限 dB。选择 `deepfilternet` 时，估算 SNR 大于等于该值会跳过，避免处理干净录音；`noisereduce` 不受 SNR gate 控制，但仍受音频时长保护。 |
+| `DENOISE_MAX_AUDIO_DURATION_SEC` | `7200` | 音频时长保护，不是执行超时。音频超过该秒数时跳过可选降噪，保留未降噪音频继续转写；时长元数据不可读或无效时也跳过，记录 `reason=audio_duration_unavailable`。设为 `0` 仅取消已知时长上限，不绕过未知时长保护。 |
 | API `denoise_model` | 省略 | 省略表示继承 `DENOISE_MODEL`；显式传 `none` 表示只对本次任务关闭降噪。 |
 | API `snr_threshold` | 省略 | 省略表示继承 `DENOISE_SNR_THRESHOLD`；显式传值只覆盖本次任务的 DeepFilterNet SNR gate。 |
 
-v0.8.4 默认面向干净会议录音，因此 `DENOISE_MODEL=none`。只有噪声环境才建议按任务
+默认面向干净会议录音，因此 `DENOISE_MODEL=none`。只有噪声环境才建议按任务
 或服务级启用 `deepfilternet` / `noisereduce`。如需“干净录音自动跳过”，请选择
-`deepfilternet`；`noisereduce` 一旦被选择就会运行。
+`deepfilternet`；两种降噪后端都受 `DENOISE_MAX_AUDIO_DURATION_SEC` 保护。
 
 ## Diarization 与 alignment
 
@@ -116,7 +121,8 @@ v0.8.4 默认面向干净会议录音，因此 `DENOISE_MODEL=none`。只有噪�
 | `WHISPERX_ALIGN_DEVICE` | `cpu` | WhisperX forced alignment 的运行设备。默认 CPU，用于隔离 wav2vec2 alignment 与 GPU ASR / speaker embedding 运行时；确认 CUDA alignment 稳定后可设为 `pipeline` / `asr` / `cuda` / `cuda:0`。 |
 | `WHISPERX_ALIGN_MODEL_MAP` | 空 | 逗号分隔 `lang=model` 覆盖，例如 `zh=org/model`。 |
 | `WHISPERX_ALIGN_MODEL_DIR` | 空 | 可选 alignment 模型目录；仅在当前 WhisperX 版本支持该参数时透传。 |
-| `WHISPERX_ALIGN_CACHE_ONLY` | `0` | 为 `1` 时，请求 WhisperX 只使用缓存加载 alignment 模型；仅在当前 WhisperX 版本支持时透传。 |
+| `WHISPERX_ALIGN_CACHE_ONLY` | `0` | 为 `1` 时，alignment 模型仅从本地缓存加载，禁止该加载路径联网；缓存不完整时以脱敏失败元数据降级，而不是下载模型。该设置不代表 ASR、diarization 和 embedding 全部离线。 |
+| `WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC` | `7200` | 音频时长保护，不是执行超时。超过该秒数时在整段音频加载前跳过 forced alignment，保留转写结果；时长元数据不可读或无效时也记录 `alignment.status=skipped, reason=audio_duration_unavailable`。设为 `0` 仅取消已知时长上限，不绕过未知时长保护。 |
 
 alignment 是可选元数据。成功时结果顶层可能包含 `alignment.status=succeeded`
 和 `segments[].words`；被显式禁用或加载失败时任务仍会完成，`words` 可能缺失，
@@ -130,9 +136,11 @@ alignment 是可选元数据。成功时结果顶层可能包含 `alignment.stat
 | `EMBEDDING_DIM` | `256` | 声纹向量维度，用于声纹库和 AS-norm cohort 形状校验。不要把不同维度的既有声纹库混用。 |
 | `MIN_EMBED_DURATION` | `1.5` | 短于该时长的 diarization turn 不参与 speaker embedding。 |
 | `MAX_EMBED_DURATION` | `10.0` | 长于该时长的 turn 会截断到该窗口后再提取 embedding。 |
+| `EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC` | `1800` | 全音频预载的时长保护，不是执行超时。已知音频时长不超过该秒数时可预载一次；更长或时长未知时按选中的 turn 分段读取，仍继续提取 embedding。设为 `0` 取消已知时长音频的预载上限。 |
 
-每个说话人 cluster 最多使用 10 个最长可用片段求平均 embedding。太短、太碎或噪声很大的
-turn 会降低登记与识别质量。
+先按元数据筛选并排序候选 turn，再为每个说话人 cluster 提取最多 10 个最长可用
+片段的平均 embedding；不是先把全部 turn 解码到内存再截取 10 个。预载失败时也会
+回退分段读取。太短、太碎或噪声很大的 turn 会降低登记与识别质量。
 
 ## 声纹与 AS-norm
 
@@ -178,6 +186,7 @@ cohort 生命周期：
 - `segments[].similarity`：说话人级匹配分数；raw cosine 或 AS-norm z-score，取决于 cohort。
 - `segments[].words`：可选词级 alignment。
 - 顶层 `alignment`：可选 forced-alignment 元数据，字段内容会脱敏。
+- 同名展示名不会合并不同的 speaker cluster；`speaker_label` 始终独立保留。
 - 顶层 `params`：记录本次任务实际使用的请求级与服务级处理参数，便于离线解释结果。
 - 顶层 `artifacts`：可选 artifact manifest，只列出稳定 / 可选 / 实验 artifact 的
   文件名、角色、类别、媒体类型和 `speaker_label`；不暴露本地路径、主机、token 或

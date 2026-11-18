@@ -59,7 +59,7 @@ Form fields:
 | `min_speakers` | int | Optional, `0` = auto |
 | `max_speakers` | int | Optional, `0` = auto |
 | `denoise_model` | string | Optional. Noise reduction backend: `none`, `deepfilternet`, `noisereduce`. When omitted, the server uses `DENOISE_MODEL` (default `none`). Sending `none` explicitly disables denoising for this request only. |
-| `snr_threshold` | float | Optional. DeepFilterNet SNR gate threshold (dB) for this request only. When `deepfilternet` is selected, audio at or above this level skips DeepFilterNet. Overrides `DENOISE_SNR_THRESHOLD` (default `10.0`); `noisereduce` does not use this gate. |
+| `snr_threshold` | float | Optional. DeepFilterNet SNR gate threshold (dB) for this request only. When `deepfilternet` is selected, audio at or above this level skips DeepFilterNet. Overrides `DENOISE_SNR_THRESHOLD` (default `10.0`); `noisereduce` is not SNR-gated but still respects service-level audio-duration protection. |
 | `no_repeat_ngram_size` | int | Optional, default `0` (disabled). When ≥ 3, suppresses n-gram repetitions in the transcript (e.g. "like like like" → "like"). Values < 3 are treated as `0`. Non-integer values return 422. |
 
 Response (200):
@@ -99,15 +99,25 @@ worker**. Use the returned `id` normally — poll `/api/jobs/{id}` or export as 
 The partial file is deleted from `data/uploads/`. Lower the cap in
 `.env` if your disk is small (the value is in bytes).
 
-**Filename**: the multipart `filename` is reduced to
-`PurePosixPath(filename).name` before use. A client-supplied
-`filename=../../etc/passwd.wav` lands on disk as just
-`tr_<id>_passwd.wav`.
+**Filename**: the multipart `filename` is reduced to a basename across POSIX
+and Windows separators, including drive and UNC paths. Control characters are
+sanitized and remaining colons are replaced with underscores before storage.
+Both `filename=../../etc/passwd.wav` and a Windows fake-path upload store only
+the cleaned basename after the job prefix, such as `tr_<id>_passwd.wav`.
 
 **503 cases**: `POST /api/transcribe` can also fail before work starts:
 
-- `503 Failed to persist job state — disk error, retry later`
-- `503 Failed to start background transcription — retry later`
+- `503 active_job_budget_exceeded` / `in_flight_job_budget_exceeded`: admission caps reached for new work.
+- `503 data_disk_pressure` / `data_disk_unavailable`: insufficient free data-disk space or unreadable disk-space information.
+- `503 Failed to persist job state; retry later`
+- `503 Failed to start background transcription; retry later`
+
+Defaults allow 200 unfinished jobs, four in-flight unique audio hashes, and
+require at least 1 GiB free on the data disk. The per-file upload cap still
+applies first; new-job admission happens after saving, hashing, and deduplication.
+Completed or in-flight duplicates reuse existing jobs without a new admission
+slot; rejected new jobs remove this upload. Back off and retry after capacity
+or disk space recovers; `503` does not mean a job was successfully created.
 
 Example:
 
@@ -124,7 +134,9 @@ practice, omit `denoise_model` to inherit `DENOISE_MODEL`, send
 `denoise_model=none` to disable denoising for one request, and send
 `snr_threshold` only when this job needs a threshold different from
 `DENOISE_SNR_THRESHOLD`. That threshold only affects `deepfilternet`;
-`noisereduce` runs directly whenever selected.
+`noisereduce` is not SNR-gated, but both backends respect
+`DENOISE_MAX_AUDIO_DURATION_SEC`: audio longer than the default 7200 seconds
+skips denoising and continues with undenoised audio, rather than timing out the job.
 
 ### `GET /api/jobs/{id}` — poll a job
 
@@ -276,6 +288,17 @@ runtime is blocked by transformers' `torch.load` safety check, `reason` is
 `torch_version_blocked` rather than `not_found`. This metadata intentionally
 does not expose tokens, hostnames, or local filesystem paths.
 
+Audio longer than `WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC` (default 7200 seconds)
+skips alignment before full-audio loading, records
+`status=skipped, reason=duration_budget_exceeded`, and keeps the transcript.
+This is not an execution timeout; `words` remains optional.
+Unreadable or invalid duration metadata also skips alignment before model or
+full-audio loading, with `status=skipped, reason=audio_duration_unavailable` and
+`duration_s=null`. The transcript and separate speaker clusters are preserved.
+This safeguard remains active when the known-duration cap is set to `0`.
+`WHISPERX_ALIGN_CACHE_ONLY=1` only covers alignment model loading: missing caches
+do not trigger downloads, and the setting does not make the entire pipeline offline.
+
 **`params`** records the effective settings used for this specific job,
 including any per-request overrides. Makes each result self-contained —
 no need to cross-reference the original request. See
@@ -321,6 +344,15 @@ aggregation fields for UI / downstream consumers:
 | `speaker_map` | object | `speaker_label → {matched_id, matched_name, similarity, embedding_key}` mapping; reflects the **diarization model's voiceprint match result** and does not change when segments are manually corrected |
 | `unique_speakers` | array[string] | Deduplicated list of speaker names, recalculated from the persisted `segments[].speaker_name` values to reflect the latest manual corrections |
 | `artifacts` | object | Optional artifact manifest for stable / optional / experimental artifacts; clients must tolerate it being absent |
+
+### `GET /api/transcriptions/{tr_id}/audio` — download original audio
+
+Returns only the file named by the persisted transcription `filename` within
+the upload directory. The filename must be one safe basename; directory
+components, backslashes, colons, empty values, and control characters return
+`400`. Persisted unsafe names are rejected, not normalized to another file's
+basename. Resolved paths outside the upload directory are also rejected.
+Missing transcriptions or original audio return `404`.
 
 ### `GET /api/export/{tr_id}`
 
@@ -464,7 +496,7 @@ Errors:
 | 401 | Missing or wrong API key |
 | 404 | Unknown tr_id / speaker_id / missing embedding |
 | 413 | Upload exceeded `MAX_UPLOAD_BYTES` (default 2 GiB) — see `/api/transcribe` |
-| 503 | Failed to persist initial `queued` status or failed to start the background transcription thread |
+| 503 | New-job admission or data-disk checks rejected the request, initial `queued` persistence failed, or the background thread failed to start |
 | 500 | Server-side exception (check `docker logs voscript`) |
 | 504 | ffmpeg transcoding timed out (exceeded `FFMPEG_TIMEOUT_SEC`, default 1800 s) |
 

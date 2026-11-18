@@ -29,6 +29,7 @@ from config import (
 from infra.job_persistence import recover_orphan_jobs
 from infra.job_runtime import start_idle_model_unload_daemon
 from pipeline import TranscriptionPipeline
+from providers.kernel_bridge.runtime import core_smoke, rust_provider_paths_enabled
 from voiceprints.db import VoiceprintDB
 
 logging.basicConfig(
@@ -44,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail before mutating persisted state or starting background workers.
+    if rust_provider_paths_enabled():
+        core_smoke({})
+
     # Ensure data directories exist
     for d in [TRANSCRIPTIONS_DIR, UPLOADS_DIR, VOICEPRINTS_DIR]:
         d.mkdir(parents=True, exist_ok=True)

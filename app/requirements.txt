@@ -1,8 +1,9 @@
-# torch/torchaudio/torchvision are provided by the base image
-# (pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime) — do NOT add them here.
-# pip would re-install them and double the image size (~1-2 GB wasted).
-# torch>=2.6 is required by recent transformers safety checks when loading
-# PyTorch .bin weights such as WhisperX's default zh alignment model.
+# Docker installs the official cu126 torch wheels separately; do not duplicate
+# torch/torchaudio/torchvision in this business dependency list.
+# This file alone is not a native installation recipe: it does not apply the
+# authenticated legacy compatibility patches or install the Rust extension.
+# The supported deployment is the CI-built Linux CUDA image; see build/README.md.
+-c requirements.constraints.txt
 pyannote.audio==3.3.2
 # Keep pyannote transitive packages below their numpy>=2 major lines while
 # pyannote.audio 3.3.2 still declares broad lower-only ranges.
@@ -13,13 +14,13 @@ pyannote.pipeline>=3.0.1,<4.0
 omegaconf==2.3.0
 antlr4-python3-runtime==4.9.3
 # faster-whisper 1.1.0 resolves to a CTranslate2 wheel that looks for cuDNN 8
-# (`libcudnn_ops_infer.so.8`). The Docker base is CUDA 12.4 + cuDNN 9, so keep
+# (`libcudnn_ops_infer.so.8`). The Docker runtime is CUDA 12.6 + cuDNN 9, so keep
 # the ASR runtime on the cuDNN9-compatible CTranslate2 line verified remotely.
 faster-whisper>=1.2.1,<2.0.0
 ctranslate2>=4.7.1,<5.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-python-multipart>=0.0.27,<0.0.28
+python-multipart>=0.0.31,<0.0.32
 aiofiles>=24.0
 # Keep numpy<2 for the current SciPy 1.11.x / license baseline and to avoid
 # pulling the newer WhisperX dependency stack that requires numpy>=2.
@@ -27,9 +28,14 @@ numpy>=1.24.0,<2.0
 # WhisperX 3.3.1 leaves pandas unbounded; keep it below the 3.x line until the
 # full numeric stack moves past the current SciPy 1.11.x baseline.
 pandas>=2.2,<3.0
-# pyannote.audio only declares huggingface-hub>=0.13; newer hub releases keep
-# a compatibility shim for use_auth_token, so no artificial upper bound is needed.
-huggingface_hub>=0.20.0
+# pyannote's legacy download arguments are adapted at scoped import sites during
+# image build. Hub 1.x no longer accepts use_auth_token directly.
+huggingface_hub==1.22.0
+requests==2.33.0
+# CVE-2026-45409: do not reuse a vulnerable idna from an existing environment.
+idna==3.15
+urllib3==2.8.0
+Pillow==13.0.0
 matplotlib>=3.7
 pydub>=0.25.1
 soundfile>=0.13.0,<0.14.0
@@ -42,10 +48,12 @@ sqlite-vec>=0.1.0
 # Docker installs whisperx==3.3.1 with --no-deps after this file is resolved.
 # WhisperX 3.3.1 still hard-pins faster-whisper==1.1.0 / ctranslate2<4.5.0,
 # which would replace the cuDNN9-compatible ASR stack above and look for
-# cuDNN8 runtime libraries in the CUDA 12.4 + cuDNN9 base image. Its alignment
+# cuDNN8 runtime libraries in the CUDA 12.6 + cuDNN9 runtime. Its alignment
 # module imports only a tiny Punkt sentence-span API; app/nltk provides that
 # compatibility shim so the image does not need the full NLTK distribution.
-transformers>=5.0.0,<5.1.0
+transformers==5.10.1
+speechbrain==1.1.2
 # Voice enhancement / noise reduction (optional — loaded only when DENOISE_MODEL != "none")
-deepfilternet>=0.5.6
+deepfilternet==0.5.6
+deepfilterlib==0.5.6
 noisereduce>=3.0.0

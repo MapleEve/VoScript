@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import sys
 import os
+import subprocess
+import textwrap
+from pathlib import Path
 from types import ModuleType
 from types import SimpleNamespace
 
@@ -38,6 +41,12 @@ from providers.embedding import default_speaker_embedding_provider
 import providers.embedding.default as embedding_default
 import pipeline.orchestrator as orchestrator
 from providers.normalize import convert_to_wav
+
+
+@pytest.fixture(autouse=True)
+def _short_synthetic_alignment_metadata(monkeypatch):
+    # Alignment-path tests use stub bytes/models rather than real audio headers.
+    monkeypatch.setattr(diarization_default, "audio_duration_seconds", lambda path: 1.0)
 
 
 class StubNormalizer:
@@ -483,6 +492,12 @@ def test_default_diarization_provider_applies_model_dir_and_cache_only(
     monkeypatch.setattr(diarization_default, "WHISPERX_ALIGN_CACHE_ONLY", True)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    hub_constants = ModuleType("huggingface_hub.constants")
+    hub_constants.HF_HUB_OFFLINE = False
+    transformers_hub = ModuleType("transformers.utils.hub")
+    transformers_hub._is_offline_mode = False
+    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", hub_constants)
+    monkeypatch.setitem(sys.modules, "transformers.utils.hub", transformers_hub)
     whisperx = sys.modules["whisperx"]
     monkeypatch.setattr(
         whisperx,
@@ -500,6 +515,8 @@ def test_default_diarization_provider_applies_model_dir_and_cache_only(
                 model_dir,
                 os.environ.get("HF_HUB_OFFLINE"),
                 os.environ.get("TRANSFORMERS_OFFLINE"),
+                hub_constants.HF_HUB_OFFLINE,
+                transformers_hub._is_offline_mode,
             )
         )
         return "align-model", {"language": language_code, "device": device}
@@ -531,10 +548,12 @@ def test_default_diarization_provider_applies_model_dir_and_cache_only(
     )
 
     assert calls == [
-        ("zh", "cpu", "safe/zh-align-model", "/cache", "1", "1"),
+        ("zh", "cpu", "safe/zh-align-model", "/cache", "1", "1", True, True),
     ]
     assert os.environ.get("HF_HUB_OFFLINE") is None
     assert os.environ.get("TRANSFORMERS_OFFLINE") is None
+    assert hub_constants.HF_HUB_OFFLINE is False
+    assert transformers_hub._is_offline_mode is False
     assert result.metadata["alignment"]["cache_only"] is True
 
 
@@ -914,10 +933,10 @@ def test_default_embedding_provider_uses_pipeline_embedding_resource(monkeypatch
 
     pipeline._embedding_model = FakeEmbeddingModel()
     monkeypatch.setattr(
-        embedding_default.torchaudio, "info", lambda audio_path: FakeInfo()
+        embedding_default.audio_io, "info", lambda audio_path: FakeInfo()
     )
     monkeypatch.setattr(
-        embedding_default.torchaudio,
+        embedding_default.audio_io,
         "load",
         lambda audio_path, frame_offset, num_frames: (FakeTensor(1, num_frames), 16000),
     )
@@ -951,7 +970,7 @@ def test_default_embedding_provider_moves_chunks_to_embedding_device(
     pipeline.device = "cuda:0"
     pipeline._embedding_device = "cuda:1"
     calls = []
-    perf_values = iter([29.0, 30.0, 30.75])
+    perf_values = iter([30.0, 30.75])
 
     class FakeTensor:
         def __init__(self, channels, frames):
@@ -975,10 +994,10 @@ def test_default_embedding_provider_moves_chunks_to_embedding_device(
 
     pipeline._embedding_model = FakeEmbeddingModel()
     monkeypatch.setattr(
-        embedding_default.torchaudio, "info", lambda audio_path: FakeInfo()
+        embedding_default.audio_io, "info", lambda audio_path: FakeInfo()
     )
     monkeypatch.setattr(
-        embedding_default.torchaudio,
+        embedding_default.audio_io,
         "load",
         lambda audio_path, frame_offset, num_frames: (FakeTensor(1, num_frames), 16000),
     )
@@ -1008,7 +1027,7 @@ def test_default_embedding_provider_moves_chunks_to_embedding_device(
     ]
 
 
-def test_default_embedding_provider_prefers_single_soundfile_load(monkeypatch):
+def test_default_embedding_provider_prefers_bounded_short_audio_preload(monkeypatch):
     pipeline = TranscriptionPipeline.__new__(TranscriptionPipeline)
     pipeline.device = "cpu"
     calls = []
@@ -1043,46 +1062,16 @@ def test_default_embedding_provider_prefers_single_soundfile_load(monkeypatch):
             calls.append(("embedding_model", payload["waveform"].shape[1]))
             return [float(payload["waveform"].shape[1]), 2.0]
 
-    class FakeArray:
-        def __init__(self, shape):
-            self.shape = shape
-
-        @property
-        def T(self):
-            return FakeArray(tuple(reversed(self.shape)))
-
-        def copy(self):
-            return self
-
     pipeline._embedding_model = FakeEmbeddingModel()
     monkeypatch.setattr(
-        embedding_default.sf,
-        "read",
-        lambda audio_path, dtype, always_2d: (
-            FakeArray((48000, 1)),
-            16000,
-        ),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        embedding_default.torch,
-        "from_numpy",
-        lambda data: calls.append(("from_numpy", data.shape)) or FakeTensor(1, 48000),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        embedding_default.torchaudio,
+        embedding_default.audio_io,
         "info",
-        lambda audio_path: (_ for _ in ()).throw(
-            AssertionError("torchaudio.info should not be used for canonical audio")
-        ),
+        lambda audio_path: SimpleNamespace(sample_rate=16000, num_frames=64000),
     )
     monkeypatch.setattr(
-        embedding_default.torchaudio,
+        embedding_default.audio_io,
         "load",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("torchaudio.load should not be used for canonical audio")
-        ),
+        lambda audio_path: calls.append(("preload", audio_path)) or (FakeTensor(1, 64000), 16000),
     )
 
     result = default_speaker_embedding_provider.extract_embeddings(
@@ -1098,11 +1087,11 @@ def test_default_embedding_provider_prefers_single_soundfile_load(monkeypatch):
 
     assert result.speaker_embeddings["SPEAKER_00"].tolist() == [32000.0, 2.0]
     assert calls == [
-        ("from_numpy", (1, 48000)),
-        ("contiguous", 32000),
+        ("preload", "demo.wav"),
         ("contiguous", 32000),
         ("to", "cpu", 32000),
         ("embedding_model", 32000),
+        ("contiguous", 32000),
         ("to", "cpu", 32000),
         ("embedding_model", 32000),
     ]
@@ -1128,7 +1117,7 @@ def test_default_embedding_provider_uses_selected_device_after_first_lazy_load(
             return FakeTensor(1, self.shape[1])
 
         def to(self, device):
-            calls.append(("chunk_to", device, self.shape[1]))
+            calls.append(("chunk_to", str(device), self.shape[1]))
             return self
 
     class FakeInfo:
@@ -1141,7 +1130,7 @@ def test_default_embedding_provider_uses_selected_device_after_first_lazy_load(
             return cls()
 
         def to(self, device):
-            calls.append(("model_to", device))
+            calls.append(("model_to", str(device)))
             return self
 
     class FakeInference:
@@ -1168,10 +1157,10 @@ def test_default_embedding_provider_uses_selected_device_after_first_lazy_load(
         lambda configured: calls.append(("select", configured)) or "cuda:1",
     )
     monkeypatch.setattr(
-        embedding_default.torchaudio, "info", lambda audio_path: FakeInfo()
+        embedding_default.audio_io, "info", lambda audio_path: FakeInfo()
     )
     monkeypatch.setattr(
-        embedding_default.torchaudio,
+        embedding_default.audio_io,
         "load",
         lambda audio_path, frame_offset, num_frames: (FakeTensor(1, num_frames), 16000),
     )
@@ -1200,3 +1189,332 @@ def test_default_embedding_provider_uses_selected_device_after_first_lazy_load(
         ("chunk_to", "cuda:1", 32000),
         ("embedding_model", 32000),
     ]
+
+
+@pytest.mark.parametrize("preload", [False, True])
+def test_embedding_selects_metadata_top_ten_per_speaker_before_decode(
+    monkeypatch, preload
+):
+    import numpy as np
+
+    native_sr = 8000
+    total_frames = 40 * native_sr
+    decoded = []
+    processed = []
+    events = []
+
+    class ObservedTurns(list):
+        def __iter__(self):
+            yield from super().__iter__()
+            events.append("metadata_selected")
+
+    class Chunk:
+        def __init__(self, offset, frames, channels=2):
+            self.offset = offset
+            self.shape = (channels, frames)
+
+        def __getitem__(self, key):
+            _, frames = key
+            return Chunk(frames.start, min(frames.stop, self.shape[1]) - frames.start)
+
+        def contiguous(self):
+            return self
+
+        def mean(self, dim=0, keepdim=True):
+            assert dim == 0 and keepdim
+            return Chunk(self.offset, self.shape[1], 1)
+
+        def to(self, device):
+            assert device == "cpu"
+            return self
+
+    def info(path):
+        assert path == "synthetic-original.wav"
+        return SimpleNamespace(sample_rate=native_sr, num_frames=total_frames)
+
+    def load(path, frame_offset=0, num_frames=-1):
+        assert "metadata_selected" in events
+        assert path == "synthetic-original.wav"
+        decoded.append((frame_offset, num_frames))
+        frames = total_frames if num_frames == -1 else min(num_frames, total_frames - frame_offset)
+        return Chunk(frame_offset, frames), native_sr
+
+    def resample(chunk, source_sr, target_sr):
+        assert source_sr == native_sr and target_sr == 16000
+        return Chunk(chunk.offset, chunk.shape[1] * 2, chunk.shape[0])
+
+    def embedding(payload):
+        chunk = payload["waveform"]
+        assert payload["sample_rate"] == 16000
+        assert chunk.shape[0] == 1
+        processed.append((chunk.offset, chunk.shape[1]))
+        return [float(chunk.offset), float(chunk.shape[1])]
+
+    turns = []
+    for speaker in ("SPEAKER_A", "SPEAKER_B"):
+        for index in range(13):
+            start = index * 2.0
+            turns.append({"speaker": speaker, "start": start, "end": start + 2 + index})
+    turns += [
+        {"speaker": "SPEAKER_A", "start": 39.0, "end": 49.0},
+        {"speaker": "SPEAKER_A", "start": 50.0, "end": 60.0},
+        {"speaker": "TOO_SHORT", "start": 0.0, "end": 1.0},
+    ]
+    monkeypatch.setattr(embedding_default, "MIN_EMBED_DURATION", 1.5)
+    monkeypatch.setattr(embedding_default, "MAX_EMBED_DURATION", 10.0)
+    monkeypatch.setattr(embedding_default, "EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC", 1800 if preload else 1)
+    monkeypatch.setattr(embedding_default.audio_io, "info", info)
+    monkeypatch.setattr(embedding_default.audio_io, "load", load)
+    monkeypatch.setattr(embedding_default.torchaudio.functional, "resample", resample, raising=False)
+
+    result = embedding_default.extract_embeddings_for_turns(
+        SimpleNamespace(device="cpu", embedding_model=embedding),
+        "synthetic-original.wav",
+        ObservedTurns(turns),
+    )
+
+    expected_decodes = []
+    expected_processed = []
+    assert list(result) == ["SPEAKER_A", "SPEAKER_B"]
+    for speaker in result:
+        candidates = []
+        for turn in turns:
+            if turn["speaker"] != speaker:
+                continue
+            start = int(turn["start"] * native_sr)
+            length = int(turn["end"] * native_sr) - start
+            if length < int(1.5 * native_sr):
+                continue
+            length = min(length, 10 * native_sr)
+            actual_length = min(length, max(total_frames - start, 0))
+            if actual_length:
+                candidates.append((start, length, actual_length * 2))
+        selected = sorted(candidates, key=lambda item: item[2], reverse=True)[:10]
+        expected_decodes += [(start, length) for start, length, _ in selected]
+        expected = [(start, actual_length) for start, _, actual_length in selected]
+        expected_processed += expected
+        np.testing.assert_allclose(result[speaker], np.mean(expected, axis=0))
+    assert processed == expected_processed
+    assert decoded == ([(0, -1)] if preload else expected_decodes)
+
+
+def test_embedding_preload_failure_falls_back_to_selected_segments(monkeypatch):
+    calls = []
+
+    class Chunk:
+        shape = (1, 32000)
+
+        def to(self, device):
+            return self
+
+    def load(path, frame_offset=0, num_frames=-1):
+        calls.append((frame_offset, num_frames))
+        if num_frames == -1:
+            raise OSError("synthetic preload failure")
+        return Chunk(), 16000
+
+    monkeypatch.setattr(embedding_default.audio_io, "info", lambda _: SimpleNamespace(sample_rate=16000, num_frames=64000))
+    monkeypatch.setattr(embedding_default.audio_io, "load", load)
+    monkeypatch.setattr(embedding_default, "EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC", 1800)
+    result = embedding_default.extract_embeddings_for_turns(
+        SimpleNamespace(device="cpu", embedding_model=lambda payload: [1.0, 2.0]),
+        "synthetic.wav",
+        [{"speaker": "SPEAKER_A", "start": 0.0, "end": 2.0}],
+    )
+    assert result["SPEAKER_A"].tolist() == [1.0, 2.0]
+    assert calls == [(0, -1), (0, 32000)]
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_alignment_offline_flags_restore_existing_values_on_all_exits(monkeypatch, failure):
+    monkeypatch.setattr(diarization_default, "WHISPERX_ALIGN_CACHE_ONLY", True)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "original")
+    hub = SimpleNamespace(HF_HUB_OFFLINE=False)
+    transformers_hub = SimpleNamespace(_is_offline_mode=False)
+    modules = {"huggingface_hub.constants": hub, "transformers.utils.hub": transformers_hub}
+    monkeypatch.setattr(diarization_default, "import_module", modules.__getitem__)
+
+    def run():
+        with diarization_default._cache_only_alignment_environment():
+            assert os.environ["HF_HUB_OFFLINE"] == "1"
+            assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
+            assert hub.HF_HUB_OFFLINE is True
+            assert transformers_hub._is_offline_mode is True
+            if failure:
+                raise OSError("synthetic model load failure")
+
+    if failure:
+        with pytest.raises(OSError):
+            run()
+    else:
+        run()
+    assert os.environ["HF_HUB_OFFLINE"] == "0"
+    assert os.environ["TRANSFORMERS_OFFLINE"] == "original"
+    assert hub.HF_HUB_OFFLINE is False
+    assert transformers_hub._is_offline_mode is False
+
+
+def test_alignment_budget_skips_before_whisperx_audio_or_model_load(monkeypatch):
+    monkeypatch.setattr(diarization_default, "WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC", 7200)
+    monkeypatch.setattr(diarization_default, "WHISPERX_ALIGN_DISABLED_LANGUAGES", frozenset())
+    monkeypatch.setattr(diarization_default, "audio_duration_seconds", lambda _: 7201.0)
+    whisperx = sys.modules["whisperx"]
+    for name in ("load_audio", "load_align_model", "align"):
+        monkeypatch.setattr(whisperx, name, lambda *a, **kw: pytest.fail("over-budget alignment must not decode or load"), raising=False)
+    segments, metadata = diarization_default.align_diarized_segments_with_metadata(
+        SimpleNamespace(device="cpu"),
+        {"language": "en", "segments": [{"start": 0.0, "end": 2.0, "text": "synthetic"}]},
+        [{"speaker": "SPEAKER_A", "start": 0.0, "end": 2.0}],
+        "synthetic.wav",
+    )
+    assert metadata["status"] == "skipped"
+    assert metadata["reason"] == "duration_budget_exceeded"
+    assert segments[0]["speaker"] == "SPEAKER_A"
+
+
+@pytest.mark.parametrize("metadata_failure", ["read_error", "missing_frames", "invalid_rate", "nonfinite_duration"])
+def test_alignment_unknown_duration_skips_without_loading_and_keeps_speakers(
+    monkeypatch, caplog, metadata_failure
+):
+    from copy import deepcopy
+    from infra.audio import metadata
+
+    def info(path):
+        if metadata_failure == "read_error":
+            raise OSError("synthetic header read failure")
+        if metadata_failure == "missing_frames":
+            return SimpleNamespace(sample_rate=16000)
+        if metadata_failure == "invalid_rate":
+            return SimpleNamespace(sample_rate=0, num_frames=16000)
+        return SimpleNamespace(sample_rate=16000, num_frames=float("nan"))
+
+    monkeypatch.setattr(metadata.audio_io, "info", info)
+    monkeypatch.setattr(diarization_default, "audio_duration_seconds", metadata.audio_duration_seconds)
+    monkeypatch.setattr(diarization_default, "WHISPERX_ALIGN_DISABLED_LANGUAGES", frozenset())
+    whisperx = sys.modules["whisperx"]
+    for name in ("load_audio", "load_align_model", "align"):
+        monkeypatch.setattr(whisperx, name, lambda *a, **kw: pytest.fail("unknown-duration alignment must not decode or load"), raising=False)
+    transcription = {
+        "language": "en",
+        "segments": [
+            {"start": 0.0, "end": 2.0, "text": "synthetic first"},
+            {"start": 2.0, "end": 4.0, "text": "synthetic second"},
+        ],
+    }
+    turns = [
+        {"speaker": "SPEAKER_A", "start": 0.0, "end": 2.0},
+        {"speaker": "SPEAKER_B", "start": 2.0, "end": 4.0},
+    ]
+    original_transcription = deepcopy(transcription)
+    original_turns = deepcopy(turns)
+    with caplog.at_level("WARNING", logger=diarization_default.logger.name):
+        segments, result_metadata = diarization_default.align_diarized_segments_with_metadata(
+            SimpleNamespace(device="cpu"), transcription, turns, "synthetic-original.wav"
+        )
+    assert result_metadata["status"] == "skipped"
+    assert result_metadata["reason"] == "audio_duration_unavailable"
+    assert result_metadata["duration_s"] is None
+    assert [segment["speaker"] for segment in segments] == ["SPEAKER_A", "SPEAKER_B"]
+    assert transcription == original_transcription
+    assert turns == original_turns
+    assert "reason=audio_duration_unavailable" in caplog.text
+
+
+@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("initial_flags", [(None, None), ("0", "1"), ("1", "0")])
+def test_alignment_first_import_offline_flags_restore_in_fresh_process(
+    failure, initial_flags
+):
+    provider_path = Path(__file__).resolve().parents[2] / "app/providers/diarization/default.py"
+    script = textwrap.dedent("""\
+        import importlib.abc
+        import importlib.util
+        import os
+        import sys
+        from types import ModuleType
+
+        def stub(name, **attrs):
+            module = ModuleType(name)
+            module.__path__ = []
+            module.__dict__.update(attrs)
+            sys.modules[name] = module
+            return module
+
+        stub("config", WHISPERX_ALIGN_DEVICE="cpu", WHISPERX_ALIGN_CACHE_ONLY=True,
+             WHISPERX_ALIGN_DISABLED_LANGUAGES=frozenset(),
+             WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC=7200,
+             WHISPERX_ALIGN_MODEL_DIR=None, WHISPERX_ALIGN_MODEL_MAP={})
+        for name in ("pipeline", "pipeline.stages", "pipeline.stages.diarization",
+                     "infra", "infra.audio"):
+            stub(name)
+        stub("pipeline.contracts", DiarizationProvider=object,
+             DiarizationRequest=object, DiarizationResult=object)
+        stub("pipeline.stages.diarization.alignment",
+             build_aligned_segments=lambda *args: [], dedup_short_segments=lambda x: x)
+        stub("infra.audio.metadata", audio_duration_seconds=lambda path: 1.0)
+
+        flags = {
+            "huggingface_hub.constants": ("HF_HUB_OFFLINE", "HF_HUB_OFFLINE"),
+            "transformers.utils.hub": ("_is_offline_mode", "TRANSFORMERS_OFFLINE"),
+        }
+        packages = {"huggingface_hub", "transformers", "transformers.utils"}
+        initialized_under = {}
+
+        class FirstImportLoader(importlib.abc.Loader):
+            def create_module(self, spec):
+                return None
+
+            def exec_module(self, module):
+                if module.__name__ in flags:
+                    attribute, variable = flags[module.__name__]
+                    initialized_under[variable] = os.environ.get(variable)
+                    setattr(module, attribute, os.environ.get(variable) == "1")
+
+        class FirstImportFinder(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname in flags or fullname in packages:
+                    return importlib.util.spec_from_loader(
+                        fullname, FirstImportLoader(), is_package=fullname in packages
+                    )
+                return None
+
+        sys.meta_path.insert(0, FirstImportFinder())
+        spec = importlib.util.spec_from_file_location("alignment_under_test", sys.argv[1])
+        provider = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(provider)
+        previous = {key: os.environ.get(key) for key in
+                    ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
+        assert not any(name in sys.modules for name in flags)
+
+        class ExpectedFailure(Exception):
+            pass
+
+        try:
+            with provider._cache_only_alignment_environment():
+                for module_name, (attribute, variable) in flags.items():
+                    assert os.environ[variable] == "1"
+                    assert getattr(sys.modules[module_name], attribute) is True
+                if sys.argv[2] == "1":
+                    raise ExpectedFailure("synthetic context failure")
+        except ExpectedFailure:
+            assert sys.argv[2] == "1"
+
+        assert initialized_under == previous
+        assert {key: os.environ.get(key) for key in previous} == previous
+        for module_name, (attribute, variable) in flags.items():
+            assert getattr(sys.modules[module_name], attribute) is (previous[variable] == "1")
+        print("offline_restore_ok")
+    """)
+    environment = os.environ.copy()
+    for variable, value in zip(("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"), initial_flags):
+        if value is None:
+            environment.pop(variable, None)
+        else:
+            environment[variable] = value
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(provider_path), "1" if failure else "0"],
+        env=environment, capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "offline_restore_ok"

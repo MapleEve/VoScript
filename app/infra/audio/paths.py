@@ -28,7 +28,7 @@ def safe_tr_dir(tr_id: str) -> Path:
     if not _TR_ID_RE.match(tr_id):
         raise HTTPException(400, f"Invalid transcription ID format: {tr_id!r}")
     path = (TRANSCRIPTIONS_DIR / tr_id).resolve()
-    if not str(path).startswith(str(TRANSCRIPTIONS_DIR.resolve())):
+    if not path.is_relative_to(TRANSCRIPTIONS_DIR.resolve()):
         raise HTTPException(400, "Path traversal detected")
     return path
 

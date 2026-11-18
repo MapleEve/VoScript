@@ -4,7 +4,48 @@
 
 ## Unreleased
 
-暂无未发布变更。
+0.8.5 正在准备发布，变更见下节；不代表镜像或部署验收已经完成。
+
+## 0.8.5 — 安全与运行时维护 (2026-11-17；待发布)
+
+### 安全
+
+- 更新运行时依赖约束，采用官方 PyTorch 2.13.0、torchaudio 2.11.0 和
+  torchvision 0.28.0 的 CUDA 12.6 wheel，并升级 Transformers、Hugging Face Hub、
+  requests、urllib3 和 Pillow 等依赖。
+  音频文件 I/O 与旧版 pyannote 下载参数使用局部兼容适配，不全局替换第三方模块；
+  依赖升级不代表所有传递依赖已无已知漏洞。
+- 原始音频下载只接受上传目录内的单个 basename，并校验解析后的路径，拒绝目录穿越、
+  反斜杠、冒号及控制字符，防止被篡改的持久化文件名指向任意文件。上传会将 POSIX
+  和 Windows 路径归一为安全 basename；下载不会把不安全的历史元数据归一成另一个文件。
+- 新任务接纳默认限制 200 个未完成任务、4 个唯一音频 hash 的进行中任务，并要求
+  数据磁盘至少剩余 1 GiB；超限返回 `503`，清理本次上传，已完成和进行中去重仍可复用。
+
+### 可靠性
+
+- `RUST_KERNEL_MODE` 默认改为 `required`：所选 Rust 声纹计分、结果后处理和 artifact
+  helper 路径缺失或执行失败时拒绝执行；`off` 仅保留为显式 Python 回退选项。
+- 修复 alignment cache-only 模式对已导入 Hugging Face / Transformers 模块的离线状态
+  控制，缺少缓存时降级而非联网补齐；该开关仅约束 alignment 模型加载。
+- 活跃任务不再被终态历史缓存淘汰，任务终态持久化与接纳名额释放覆盖失败路径；
+  ffmpeg 失败或中断时清理未完成的规范化音频。
+- 降噪和 forced alignment 对超过默认 7200 秒的音频可观测地跳过可选处理并继续任务；
+  这些预算是音频时长保护，不是执行超时，不会把任务改为超时失败。时长元数据不可读
+  或无效时也跳过，记录 `reason=audio_duration_unavailable`；取消已知时长上限不绕过此保护。
+- Embedding 先按元数据选择每个 cluster 最多 10 个最长可用片段，默认仅对不超过
+  1800 秒的已知时长音频预载整段；更长、时长未知或预载失败时按片段读取。
+- HTTP 调用方式与 speaker 输出契约保持兼容：不同 speaker cluster 不因展示名相同
+  而合并，词级 alignment 仍为可选字段。升级无需清空声纹库、模型缓存或 AS-norm cohort。
+
+### 镜像发布
+
+- 镜像发布只通过 Docker workflow 在 `main` 上手动 `workflow_dispatch`，输入已存在的
+  稳定版已发布 tag；创建 tag 或发布 GitHub Release 本身不再自动触发镜像发布。
+  Workflow 校验精确的已整合源码和必需 CI 证据，再对同一个镜像完成审计和 smoke
+  检查后才写入 registry。最后重验会重新解析当前远端 tag（包括 annotated tag）；
+  ref 移动、缺失或查询错误都会阻断发布。
+- 支持的镜像使用 Python 3.11、官方 PyTorch CUDA 12.6 wheel、匹配的 Rust 扩展及
+  经过校验的兼容适配；原生安装不在该镜像门禁覆盖范围内，requirements 不是完整原生安装配方。
 
 ## 0.8.4 — Rust kernel 基础能力与发布门禁 (2026-06-10)
 

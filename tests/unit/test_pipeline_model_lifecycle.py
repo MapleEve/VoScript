@@ -261,7 +261,7 @@ def test_each_model_lazy_load_selects_its_own_cuda_device(monkeypatch, caplog):
 
     class FakeDiarization:
         def to(self, device):
-            pyannote_calls.append(("diarization_to", device))
+            pyannote_calls.append(("diarization_to", str(device)))
             return self
 
     class FakePyannotePipeline:
@@ -277,7 +277,7 @@ def test_each_model_lazy_load_selects_its_own_cuda_device(monkeypatch, caplog):
             return cls()
 
         def to(self, device):
-            pyannote_calls.append(("embedding_to", device))
+            pyannote_calls.append(("embedding_to", str(device)))
             return self
 
     class FakeInference:

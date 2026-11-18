@@ -53,14 +53,17 @@ class FFmpegInputNormalizer(InputNormalizationProvider):
                 check=True,
                 timeout=FFMPEG_TIMEOUT_SEC,
             )
-        except subprocess.TimeoutExpired:
-            normalized_path.unlink(missing_ok=True)
-            logger.error(
-                "ffmpeg timed out after %ds on %s",
-                FFMPEG_TIMEOUT_SEC,
-                input_path.name,
-            )
-            raise HTTPException(504, f"ffmpeg timed out after {FFMPEG_TIMEOUT_SEC}s")
+        except BaseException as exc:
+            try:
+                normalized_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to remove partial normalized audio")
+            if isinstance(exc, subprocess.TimeoutExpired):
+                logger.error("ffmpeg timed out after %ds", FFMPEG_TIMEOUT_SEC)
+                raise HTTPException(
+                    504, f"ffmpeg timed out after {FFMPEG_TIMEOUT_SEC}s"
+                ) from exc
+            raise
 
         return AudioNormalizationResult(
             source_path=input_path,

@@ -54,7 +54,7 @@ VoScript 解决的就是这个。**把声音登记一次，之后所有录音自
 ```bash
 git clone https://github.com/MapleEve/voscript.git && cd voscript
 cp .env.example .env   # 至少填 HF_TOKEN 和 API_KEY
-docker compose up -d --build
+docker compose up -d
 ```
 
 浏览器打开 `http://localhost:8780`，上传录音，等结果。
@@ -62,6 +62,8 @@ docker compose up -d --build
 > 安全提醒：公网部署前务必在 `.env` 设置强 `API_KEY`，否则任何人都能操作你的声纹库。
 
 默认配置面向干净会议录音：不开降噪，GPU 模型空闲 3 分钟后释放；多 GPU 机器默认让容器看到所有 NVIDIA GPU，并在模型重新加载时选择当前空闲显存最多的可见设备。
+
+Compose 默认使用包含 Rust wheel 的发布镜像，无需本机编译。默认 `RUST_KERNEL_MODE=required`，所选 Rust 路径不可用时会拒绝执行，不会静默回退。升级前请备份并保留数据目录、模型缓存和 AS-norm cohort；源码构建见[快速上手](./doc/quickstart.zh.md#3-启动服务)。
 
 要调整降噪、声纹阈值、GPU 可见性或模型常驻策略：
 
@@ -125,12 +127,6 @@ docker compose up -d --build
 召回率 50% → 70%，零误识别。
 
 技术细节 → [`doc/benchmarks.zh.md`](./doc/benchmarks.zh.md)
-
----
-
-## 1.0 与后续方向
-
-长期愿景：VoScript 会先把自托管转录和声纹识别做稳，并持续服务真实会议与录音工作流。
 
 ---
 

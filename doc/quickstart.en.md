@@ -11,8 +11,8 @@ waiting for model weights to download.
 | --- | --- | --- | --- |
 | Linux + NVIDIA GPU | docker-compose (main flow below) | Best | Recommended, the main path of this doc |
 | Windows 11 + WSL2 + NVIDIA GPU | docker-compose (Linux flow inside WSL2) | Best | See [0.2](#02-windows-11--wsl2) |
-| macOS Apple Silicon (M1/M2/M3/M4) | **native venv, CPU-only** | Usable but slow | Docker Desktop on macOS **cannot pass through the GPU**; see [0.3](#03-macos-apple-silicon--intel) |
-| macOS Intel | native venv, CPU-only | Usable but very slow | Same as Apple Silicon; see [0.3](#03-macos-apple-silicon--intel) |
+| macOS Apple Silicon (M1/M2/M3/M4) | Native CPU port, not covered by the image gate | Not qualified | Use a Linux GPU host as the service; see [0.3](#03-macos-apple-silicon--intel) |
+| macOS Intel | Native CPU port, not covered by the image gate | Not qualified | Same boundary as Apple Silicon; see [0.3](#03-macos-apple-silicon--intel) |
 
 CPU / low-VRAM deployments: **use `WHISPER_MODEL=medium`** (covered in step 2).
 It's 3–4× faster than `large-v3` and quality stays acceptable, especially for
@@ -37,6 +37,8 @@ Chinese and English.
 ## 0.1 Linux + NVIDIA GPU (main path)
 
 - Docker 24+
+- NVIDIA driver compatible with CUDA 12.6; the published image enforces a
+  native Linux driver floor of 560.35.05.
 - **NVIDIA Container Toolkit** (without it, compose fails with
   `could not select device driver`):
   ```bash
@@ -71,7 +73,8 @@ hood, so the two are equivalent.
 Prereqs:
 - Windows 11, or Windows 10 21H2+
 - WSL2 Ubuntu installed (`wsl --install -d Ubuntu`)
-- NVIDIA driver ≥ 470 on Windows
+- A current NVIDIA Windows driver supporting CUDA 12.6 in WSL2; an older
+  GPU-passthrough-only minimum is insufficient for this image.
 - Docker available inside WSL2 (either install docker directly in WSL2, or
   install Docker Desktop on Windows and enable "Use WSL 2 based engine" +
   "Enable integration with my default WSL distro")
@@ -90,58 +93,29 @@ If both work, the Linux flow applies verbatim.
 ## 0.3 macOS (Apple Silicon / Intel)
 
 **Important**: Docker Desktop on macOS **cannot pass a GPU into containers**
-(no CUDA, no Metal). The docker-compose path on macOS is CPU-only and
-`large-v3` is effectively unusable there. Use **native venv + CPU** and
-drop the model to `medium`.
+(no CUDA, no Metal). The supported deployment is the CI-built Linux CUDA
+image, with Python 3.11, official cu126 wheels, the matching Rust extension,
+and authenticated legacy compatibility adaptations. Run it on a compatible
+Linux / WSL2 GPU host and use the Mac as a client.
 
-Prereqs:
-- Python 3.11 (recommend `brew install python@3.11`)
-- ffmpeg (`brew install ffmpeg`)
-- libsndfile (`brew install libsndfile`)
-- 16 GB RAM or more (Apple Silicon unified memory counts)
+Native macOS / CPU installations are not covered by the published image's
+compatibility gate. `pip install -r app/requirements.txt` is **not** a complete
+native installation recipe. A manual port must separately qualify all of:
 
-```bash
-# 1. clone
-git clone https://github.com/MapleEve/voscript.git
-cd voscript
+- Python 3.11, ffmpeg, libsndfile, and platform-compatible Torch / torchaudio /
+  torchvision wheels within `app/requirements.constraints.txt`.
+- The additional WhisperX `3.3.1` installation and authenticated compatibility
+  adaptations described in [Runtime Compatibility Tools](../app/build/README.md).
+  Installing requirements alone does not apply those adaptations.
+- A `voscript_core` wheel built from the same source version for that platform
+  and Python ABI, using Rust and maturin. Keep `RUST_KERNEL_MODE=required`.
+- Real audio I/O, model/checkpoint loading, alignment, and a fresh transcription
+  on the target platform before treating the port as usable.
 
-# 2. create venv at the repo root
-python3.11 -m venv .venv
-source .venv/bin/activate
-
-# 3. install deps (on macOS, torch resolves to the CPU/MPS wheel, not CUDA)
-pip install --upgrade pip
-pip install -r app/requirements.txt
-
-# 4. set env vars
-export HF_TOKEN="<HF_TOKEN>"
-export API_KEY=$(openssl rand -hex 32)
-export DEVICE=cpu                 # macOS must be cpu (pyannote's MPS support is incomplete)
-export WHISPER_MODEL=medium       # large-v3 on CPU is too slow
-export DATA_DIR=$(pwd)/data
-mkdir -p "$DATA_DIR"
-
-# Note this API_KEY — BetterAINote needs the exact same value
-
-# 5. launch
-cd app
-uvicorn main:app --host 0.0.0.0 --port 8780
-```
-
-Expected performance (ballpark):
-- M2 Pro / M3 Pro + `medium` + 1 minute of audio ≈ 30–60 s
-- M1 / Intel + `medium` + 1 minute of audio ≈ 1.5–3 min
-- `large-v3` on CPU is 3–5× slower. **Not recommended.**
-
-Known limitations:
-- Docker-compose path is not supported on macOS
-- No MPS acceleration (pyannote 3.1 has unimplemented ops on MPS, either
-  errors or silently falls back to CPU)
-- If you have access to a Linux / Windows host with an NVIDIA GPU, run the
-  service there and use Mac as the client
-
-Everything after this point (config, wiring into BetterAINote) is the
-same, just **skip every docker step**.
+Do not apply `requirements.docker.constraints.txt` or install `+cu126` wheels
+on macOS / CPU-only systems. The platform-neutral constraints do not by
+themselves establish native compatibility. This guide does not provide a
+qualified native launch recipe or native performance claim.
 
 ## 1. Clone the repo
 
@@ -192,38 +166,47 @@ A few worth knowing about:
 | `MAX_UPLOAD_BYTES` | `2147483648` (2 GiB) | Per-request upload cap; requests past this get `HTTP 413` |
 | `APP_UID` | `1000` | uid the container runs as — must match the owner of `DATA_DIR` on the host |
 | `APP_GID` | `1000` | same, gid |
-| `JOBS_MAX_CACHE` | `200` | LRU cap for the in-memory job dictionary; evicted jobs remain queryable via disk status.json |
+| `JOBS_MAX_CACHE` | `200` | Terminal-job memory cache cap; active jobs are not evicted by it, and terminal records remain queryable from disk |
+| `TRANSCRIPTION_MAX_ACTIVE_JOBS` | `200` | Admission cap for unfinished jobs; new jobs receive `503` at capacity, `0` disables |
+| `TRANSCRIPTION_MAX_IN_FLIGHT_JOBS` | `4` | In-flight unique audio hash cap, not GPU parallelism; `0` disables |
+| `TRANSCRIPTION_MIN_FREE_DISK_BYTES` | `1073741824` | New-job admission requires at least 1 GiB free on the data disk; `0` disables |
+| `RUST_KERNEL_MODE` | `required` | Selected Rust paths must be available and execute successfully or fail closed; `off` is an explicit Python rollback |
 | `FFMPEG_TIMEOUT_SEC` | `1800` | Timeout in seconds for ffmpeg conversion; returns 504 on expiry |
 | `CUDA_VISIBLE_DEVICES` | unset | Optional NVIDIA visibility limit; by default this variable is not injected and compose requests every Docker-exposed GPU. To restrict visibility, add it through `docker-compose.override.yml` or another explicit operator env override. When set, in-container `cuda:N` indexes are remapped from the visible set and may not match physical host GPU numbers |
 | `MODEL_IDLE_TIMEOUT_SEC` | `180` | GPU model idle-unload timeout, defaulting to 180 seconds (3 minutes); set `0` to disable idle unload and keep models resident. When enabled, ASR, diarization, and embedding each reselect the best visible CUDA device on their next lazy load |
 | `ALLOW_NO_AUTH` | `0` | Set to 1 to suppress the startup warning when no API_KEY is configured (explicitly confirms unauthenticated mode) |
 | `DENOISE_MODEL` | `none` | Service default denoise backend: `none`, `deepfilternet`, or `noisereduce`; API requests may override it per job |
 | `DENOISE_SNR_THRESHOLD` | `10.0` | DeepFilterNet SNR gate in dB; audio at or above this value skips DeepFilterNet when `deepfilternet` is selected; `noisereduce` is not gated |
+| `DENOISE_MAX_AUDIO_DURATION_SEC` | `7200` | Longer or unknown-duration audio skips optional denoising and continues the job; `0` removes only the known-duration cap |
 | `VOICEPRINT_THRESHOLD` | `0.75` | Base raw-cosine voiceprint threshold before per-speaker adaptive adjustment |
 | `PYANNOTE_MIN_DURATION_OFF` | `0.5` | Pyannote off-turn smoothing, used to reduce over-segmentation of short pauses |
 | `MIN_EMBED_DURATION` | `1.5` | Minimum diarization turn duration used for speaker embedding extraction |
 | `MAX_EMBED_DURATION` | `10.0` | Maximum per-turn audio window used for speaker embedding extraction |
+| `EMBEDDING_PRELOAD_MAX_AUDIO_DURATION_SEC` | `1800` | Longer audio uses selected-segment reads instead of full-audio preloading; not an execution timeout, `0` removes the cap for known-duration audio |
 | `WHISPERX_ALIGN_DISABLED_LANGUAGES` | empty | Comma-separated languages that explicitly skip WhisperX forced alignment; use only as a temporary operational fallback |
 | `WHISPERX_ALIGN_DEVICE` | `cpu` | Runtime device for WhisperX forced alignment; CPU is the default to keep alignment isolated from GPU ASR / speaker-embedding runtimes |
 | `WHISPERX_ALIGN_MODEL_MAP` | empty | Comma-separated `lang=model` overrides, for example `zh=your-org/your-zh-align-model` |
 | `WHISPERX_ALIGN_MODEL_DIR` | empty | Optional alignment model cache directory passed through when the installed WhisperX supports it |
-| `WHISPERX_ALIGN_CACHE_ONLY` | `0` | Set to 1 to request cache-only alignment model loading when supported by the installed WhisperX version |
+| `WHISPERX_ALIGN_CACHE_ONLY` | `0` | Set to 1 for local-cache-only alignment model loading; incomplete caches degrade instead of downloading |
+| `WHISPERX_ALIGN_MAX_AUDIO_DURATION_SEC` | `7200` | Longer or unknown-duration audio skips alignment and keeps the transcript; `0` removes only the known-duration cap |
 
 For `POST /api/transcribe`, omitting `denoise_model` means "use the service
 default from `DENOISE_MODEL`". Sending `denoise_model=none` is the explicit
 per-request opt-out. Sending `snr_threshold` always overrides
 `DENOISE_SNR_THRESHOLD` for that request only, but only affects
-`deepfilternet`; `noisereduce` runs whenever selected.
+`deepfilternet`; both denoising backends still respect audio-duration protection.
 For every supported setting, the Whisper / ASR parameters that are not exposed
 as env yet, and AS-norm cohort preservation semantics, see
 [`configuration.en.md`](./configuration.en.md).
 
 Chinese word-level alignment is attempted by default and runs on CPU by
 default to keep wav2vec2 alignment isolated from GPU ASR / speaker-embedding
-runtimes. The Docker image uses PyTorch 2.6.0 so recent transformers safety
-checks can load the default Chinese `.bin` alignment weights. If you run a
-custom image with older torch, use torch>=2.6 or a trusted replacement
-alignment model that provides safetensors; only set
+runtimes. The Dockerfile selects Python 3.11 and official CUDA 12.6 wheels
+using the [runtime constraints](../app/requirements.docker.constraints.txt),
+including the checkpoint-loading safety floor required by the default Chinese
+`.bin` alignment weights. Custom images should retain the current
+dependency constraints, or use a trusted replacement alignment model providing
+safetensors; do not disable checkpoint safety checks. Only set
 `WHISPERX_ALIGN_DISABLED_LANGUAGES=zh` if you intentionally want a temporary
 segment-level fallback.
 
@@ -246,9 +229,16 @@ echo "APP_GID=$(id -g)" >> .env
 
 ## 3. Start the service
 
+Compose defaults to the published `VOSCRIPT_IMAGE=ghcr.io/mapleeve/voscript:v0.8.5`
+image, including the `voscript_core` wheel. Normal installation requires no Rust
+toolchain or local compilation. `RUST_KERNEL_MODE=required` is the default;
+selected Rust paths fail closed without silent fallback.
+
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+Set `VOSCRIPT_IMAGE` in `.env` to pin another published tag or digest.
 
 The first boot downloads ~5 GB of model weights into `./models/`. Watch
 progress with:
@@ -259,13 +249,18 @@ docker logs -f voscript
 
 You are good when you see `Uvicorn running on http://0.0.0.0:8780`.
 
-Or run the bundled helper:
+### Optional: build an image from source
+
+First place a `voscript_core` wheel matching the target Linux architecture,
+Python 3.11, and source version in `app/.wheelhouse/`. Do not use a macOS wheel
+in a Linux image, or treat a Python-only image without the wheel as a complete
+default installation. Use a separate local image name:
 
 ```bash
-./scripts/deploy.sh
+VOSCRIPT_IMAGE=voscript-local:dev docker compose up -d --build --pull never
 ```
 
-It checks `.env`, starts the container, and waits for `/healthz`.
+For native source installs, see the qualification boundary in the macOS section above.
 
 ## 4. Verify the deployment
 
@@ -295,13 +290,22 @@ this service. See [`api.en.md`](./api.en.md) for the full contract.
 
 ## Upgrades
 
+Back up and preserve the existing data directory (including voiceprints and
+AS-norm cohort) and model cache, keeping the same mounts. Upgrading 0.8.4 to
+0.8.5 does not require deleting voiceprints or rebuilding the cohort. Source
+builds need the matching Rust wheel updated first; published-image deployments
+should check that `.env` does not pin an old `VOSCRIPT_IMAGE`, or update it to
+the intended tag / digest. Never delete data volumes or model caches as an upgrade step.
+
 ```bash
 cd voscript
 git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-Model weights in `./models/` are cached, rebuild won't redownload them.
+Model weights are cached in `./models/`; preserving this mount keeps caches
+when replacing or rebuilding the image.
 
 ### Upgrading from 0.2.x to 0.3.0
 
@@ -352,7 +356,8 @@ and that BetterAINote's host can actually reach `:8780` (firewall,
 docker networks).
 
 ### What do I back up?
-→ Just `data/voiceprints/`. Everything else can be re-derived from the
-original audio.
+→ Preserve the complete data directory, including voiceprints, transcriptions
+and the persisted AS-norm cohort, plus the model cache and private operator
+configuration. Do not delete these during an upgrade; keep credentials private.
 
 See [`security.en.md`](./security.en.md) for deployment-risk details.
