@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import re
 import subprocess
 import sys
+import urllib.error
 
 import pytest
 import yaml
@@ -239,6 +241,136 @@ def test_latest_failed_run_cannot_borrow_old_green_check(monkeypatch):
         contracts.complete_checks(sha)
 
 
+@pytest.mark.parametrize("depth", [0, 1, 2])
+def test_remote_release_tag_resolves_exact_ref_and_immutable_objects(
+    monkeypatch, depth
+):
+    sha = "a" * 40
+    tag_objects = ["b" * 40, "c" * 40][:depth]
+    objects = [
+        *({"type": "tag", "sha": value} for value in tag_objects),
+        {"type": "commit", "sha": sha},
+    ]
+    responses = {
+        "git/ref/tags/v1.2.3": {"ref": "refs/tags/v1.2.3", "object": objects[0]},
+        **{
+            f"git/tags/{value}": {"sha": value, "object": objects[index + 1]}
+            for index, value in enumerate(tag_objects)
+        },
+    }
+    calls = []
+
+    def fake_api(path):
+        calls.append(path)
+        return responses[path]
+
+    def reject_git(*args):
+        raise AssertionError(f"Remote tag resolution must not use local git: {args}")
+
+    monkeypatch.setattr(contracts, "api", fake_api)
+    monkeypatch.setattr(contracts, "git", reject_git)
+    assert contracts.remote_tag_commit("v1.2.3") == sha
+    assert calls == ["git/ref/tags/v1.2.3", *(f"git/tags/{v}" for v in tag_objects)]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        [],
+        {},
+        {"ref": "refs/tags/v1.2.30", "object": {"type": "commit", "sha": "a" * 40}},
+        {"ref": "refs/heads/v1.2.3", "object": {"type": "commit", "sha": "a" * 40}},
+        {"ref": "refs/tags/v1.2.3"},
+        {"ref": "refs/tags/v1.2.3", "object": []},
+        {"ref": "refs/tags/v1.2.3", "object": {"type": "commit", "sha": None}},
+        {"ref": "refs/tags/v1.2.3", "object": {"type": "commit", "sha": "a" * 39}},
+        {"ref": "refs/tags/v1.2.3", "object": {"type": "commit", "sha": "g" * 40}},
+        {"ref": "refs/tags/v1.2.3", "object": {"type": "tree", "sha": "a" * 40}},
+        {"ref": "refs/tags/v1.2.3", "object": {"type": "blob", "sha": "a" * 40}},
+        {"ref": "refs/tags/v1.2.3", "object": {"sha": "a" * 40}},
+    ],
+)
+def test_remote_release_tag_rejects_inexact_or_malformed_refs(monkeypatch, response):
+    monkeypatch.setattr(contracts, "api", lambda path: response)
+    with pytest.raises(ValueError):
+        contracts.remote_tag_commit("v1.2.3")
+
+
+@pytest.mark.parametrize("mutation", ["missing", "wrong-sha", "cycle", "deep", "blob"])
+def test_remote_release_tag_rejects_invalid_annotated_objects(monkeypatch, mutation):
+    tag_sha = "b" * 40
+    calls = []
+
+    def fake_api(path):
+        calls.append(path)
+        if path == "git/ref/tags/v1.2.3":
+            return {
+                "ref": "refs/tags/v1.2.3",
+                "object": {"type": "tag", "sha": tag_sha},
+            }
+        requested = path.removeprefix("git/tags/")
+        if mutation == "cycle":
+            return {"sha": requested, "object": {"type": "tag", "sha": requested}}
+        if mutation == "deep":
+            return {
+                "sha": requested,
+                "object": {"type": "tag", "sha": f"{len(calls):040x}"},
+            }
+        if mutation == "missing":
+            return {"sha": requested}
+        return {
+            "sha": "c" * 40 if mutation == "wrong-sha" else requested,
+            "object": {
+                "type": "blob" if mutation == "blob" else "commit",
+                "sha": "a" * 40,
+            },
+        }
+
+    monkeypatch.setattr(contracts, "api", fake_api)
+    with pytest.raises(ValueError):
+        contracts.remote_tag_commit("v1.2.3")
+    assert len(calls) <= 17
+
+
+@pytest.mark.parametrize("stage", ["ref", "annotated"])
+@pytest.mark.parametrize(
+    "failure", ["deleted", "forbidden", "rate-limit", "network", "timeout", "json"]
+)
+def test_remote_release_tag_lookup_errors_never_fall_back(monkeypatch, stage, failure):
+    url = "https://api.github.com/repos/example/project/git/ref/tags/v1.2.3"
+    error = {
+        "deleted": urllib.error.HTTPError(url, 404, "Not Found", None, None),
+        "forbidden": urllib.error.HTTPError(url, 403, "Forbidden", None, None),
+        "rate-limit": urllib.error.HTTPError(url, 429, "Too Many Requests", None, None),
+        "network": urllib.error.URLError("synthetic network failure"),
+        "timeout": TimeoutError("synthetic timeout"),
+        "json": json.JSONDecodeError("synthetic invalid response", "", 0),
+    }[failure]
+    calls = []
+
+    def fake_api(path):
+        calls.append(path)
+        if stage == "annotated" and path == "git/ref/tags/v1.2.3":
+            return {
+                "ref": "refs/tags/v1.2.3",
+                "object": {"type": "tag", "sha": "b" * 40},
+            }
+        raise error
+
+    def reject_git(*args):
+        raise AssertionError(f"Failed remote lookup must not fall back to git: {args}")
+
+    monkeypatch.setattr(contracts, "api", fake_api)
+    monkeypatch.setattr(contracts, "git", reject_git)
+    with pytest.raises(type(error)) as raised:
+        contracts.remote_tag_commit("v1.2.3")
+    assert raised.value is error
+    assert calls == ["git/ref/tags/v1.2.3"] + (
+        [f"git/tags/{'b' * 40}"] if stage == "annotated" else []
+    )
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["accepted", "candidate", "unmerged", "wrong-tag", "moved-main", "weakened-checks"],
@@ -279,6 +411,11 @@ def test_release_source_rejects_unreviewed_or_mismatched_source(
     monkeypatch.setattr(contracts, "complete_checks", lambda target: None)
 
     def fake_api(path):
+        if path == "git/ref/tags/v1.2.3":
+            return {
+                "ref": "refs/tags/v1.2.3",
+                "object": {"type": "commit", "sha": sha},
+            }
         if path.endswith("/pulls?per_page=100"):
             return (
                 []

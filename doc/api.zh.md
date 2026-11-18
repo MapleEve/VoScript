@@ -94,10 +94,10 @@ curl http://localhost:8780/healthz
 同时把半截文件从 `data/uploads/` 删掉。用不了那么大空间的小机器可以在
 `.env` 里把 `MAX_UPLOAD_BYTES` 调小（单位字节）。
 
-**文件名**：multipart 里带的 `filename` 会先过
-`PurePosixPath(filename).name`，只保留最末一段——客户端传
-`filename=../../etc/passwd.wav` 也只会在磁盘上落为
-`tr_<id>_passwd.wav`。
+**文件名**：multipart 里的 `filename` 会同时按 POSIX 和 Windows 分隔符取
+basename，包括盘符和 UNC 路径；控制字符会清洗，剩余冒号替换为下划线。
+`filename=../../etc/passwd.wav` 或 Windows fake-path 上传都只会把清洗后的
+basename 加在 job 前缀后保存，例如 `tr_<id>_passwd.wav`。
 
 **503 场景**：`POST /api/transcribe` 也可能在真正开始处理前失败：
 
@@ -313,7 +313,8 @@ artifact。当前稳定项包括主结果 `result.json` 和每个说话人 clust
 ### `GET /api/transcriptions/{tr_id}/audio` — 下载原始音频
 
 只返回该转录持久化 `filename` 对应、位于上传目录内的文件。文件名必须是单个
-basename；目录片段、反斜杠、空值或空字节返回 `400`，解析后逃出上传目录也被拒绝。
+安全 basename；目录片段、反斜杠、冒号、空值或控制字符返回 `400`，不会把持久化的
+不安全名称归一成另一个文件的 basename；解析后逃出上传目录也被拒绝。
 转录或原始音频不存在时返回 `404`。
 
 ### `GET /api/export/{tr_id}` — 导出

@@ -99,10 +99,11 @@ worker**. Use the returned `id` normally — poll `/api/jobs/{id}` or export as 
 The partial file is deleted from `data/uploads/`. Lower the cap in
 `.env` if your disk is small (the value is in bytes).
 
-**Filename**: the multipart `filename` is reduced to
-`PurePosixPath(filename).name` before use. A client-supplied
-`filename=../../etc/passwd.wav` lands on disk as just
-`tr_<id>_passwd.wav`.
+**Filename**: the multipart `filename` is reduced to a basename across POSIX
+and Windows separators, including drive and UNC paths. Control characters are
+sanitized and remaining colons are replaced with underscores before storage.
+Both `filename=../../etc/passwd.wav` and a Windows fake-path upload store only
+the cleaned basename after the job prefix, such as `tr_<id>_passwd.wav`.
 
 **503 cases**: `POST /api/transcribe` can also fail before work starts:
 
@@ -347,10 +348,11 @@ aggregation fields for UI / downstream consumers:
 ### `GET /api/transcriptions/{tr_id}/audio` — download original audio
 
 Returns only the file named by the persisted transcription `filename` within
-the upload directory. The filename must be one basename; directory components,
-backslashes, empty values, and null bytes return `400`. Resolved paths outside
-the upload directory are also rejected. Missing transcriptions or original
-audio return `404`.
+the upload directory. The filename must be one safe basename; directory
+components, backslashes, colons, empty values, and control characters return
+`400`. Persisted unsafe names are rejected, not normalized to another file's
+basename. Resolved paths outside the upload directory are also rejected.
+Missing transcriptions or original audio return `404`.
 
 ### `GET /api/export/{tr_id}`
 

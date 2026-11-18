@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -46,6 +47,12 @@ def _submit(context, content=b"synthetic audio"):
     return context.client.post(
         "/api/transcribe", files={"file": ("synthetic.wav", content, "audio/wav")}
     )
+
+
+def _snapshot_job_store(store):
+    """Copy both cache tiers under lock; the store is not an iterable mapping."""
+    with store._lock:
+        return deepcopy((store._active, store._d))
 
 
 def test_duplicate_reuses_durable_job_at_capacity_and_under_disk_pressure(
@@ -98,7 +105,7 @@ def test_unique_upload_rejection_leaves_no_new_runtime_or_files(
         monkeypatch.setattr(context.router, name, 1)
         assert _submit(context, b"first synthetic upload").status_code == 200
     before = context.runtime.admission_counts()
-    before_jobs = dict(context.router.jobs)
+    before_jobs = _snapshot_job_store(context.router.jobs)
     before_hashes = dict(context.runtime._in_flight_hashes)
     before_active = set(context.runtime._active_job_ids)
     before_started = list(context.started)
@@ -109,7 +116,7 @@ def test_unique_upload_rejection_leaves_no_new_runtime_or_files(
     response = _submit(context, b"second synthetic upload")
     assert response.status_code == 503
     assert context.runtime.admission_counts() == before
-    assert dict(context.router.jobs) == before_jobs
+    assert _snapshot_job_store(context.router.jobs) == before_jobs
     assert context.runtime._in_flight_hashes == before_hashes
     assert context.runtime._active_job_ids == before_active
     assert context.started == before_started

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import urllib.error
 import zipfile
 
 import pytest
@@ -288,6 +289,37 @@ def test_release_validator_is_read_only_main_code_before_candidate_checkout():
     assert publish["needs"] == "validate-source"
     assert publish["permissions"]["packages"] == "write"
     assert "../control/voscript-api/scripts/image_release_gate.py" in str(publish)
+    publish_steps = publish["steps"]
+    revalidate = next(
+        i
+        for i, step in enumerate(publish_steps)
+        if "EXPECTED_SOURCE_SHA" in step.get("env", {})
+    )
+    smoke = next(
+        i
+        for i, step in enumerate(publish_steps)
+        if "image_release_gate.py" in step.get("run", "")
+    )
+    authenticate = next(
+        i
+        for i, step in enumerate(publish_steps)
+        if "docker login" in step.get("run", "")
+    )
+    push = next(
+        i
+        for i, step in enumerate(publish_steps)
+        if "docker push" in step.get("run", "")
+    )
+    assert smoke < revalidate < authenticate < push
+    assert publish_steps[revalidate]["working-directory"] == "control"
+    assert (
+        publish_steps[revalidate]["run"]
+        == "python voscript-api/scripts/ci_release_contracts.py release"
+    )
+    assert (
+        publish_steps[revalidate]["env"]["EXPECTED_SOURCE_SHA"]
+        == "${{ needs.validate-source.outputs.sha }}"
+    )
     heavy = workflow("rust-foundation-heavy.yml")
     assert heavy["on"]["pull_request"]["types"] == [
         "opened",
@@ -298,6 +330,134 @@ def test_release_validator_is_read_only_main_code_before_candidate_checkout():
     proof_upload = next(step for step in resolver["steps"] if step.get("id") == "proof")
     assert proof_upload["with"]["overwrite"] == "false"
     assert "github.run_attempt" in proof_upload["with"]["name"]
+
+
+@pytest.mark.parametrize("annotated", [False, True])
+@pytest.mark.parametrize(
+    "change", ["unchanged", "moved", "deleted", "network", "timeout"]
+)
+def test_release_revalidation_refreshes_remote_tag_despite_stale_local_green_source(
+    tmp_path, monkeypatch, annotated, change
+):
+    sha, control = "a" * 40, "b" * 40
+    event = tmp_path / "event.json"
+    output = tmp_path / "output"
+    event.write_text(json.dumps({"inputs": {"tag": "v1.2.3"}}))
+    for name, value in {
+        "GITHUB_EVENT_PATH": str(event),
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REPOSITORY": "example/project",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_WORKFLOW_REF": "example/project/.github/workflows/release.yml@refs/heads/main",
+        "GITHUB_WORKFLOW_SHA": control,
+        "GITHUB_SHA": control,
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("EXPECTED_SOURCE_SHA", raising=False)
+    git_calls, remote_calls, checked = [], [], []
+    state = {"changed": False}
+
+    def fake_git(*args):
+        git_calls.append(args)
+        if args in {("rev-parse", "HEAD"), ("rev-parse", "origin/main")}:
+            return control
+        if args == ("rev-parse", "--verify", f"{sha}^{{commit}}"):
+            return sha
+        if args == ("rev-parse", "--verify", "refs/tags/v1.2.3^{commit}"):
+            return sha  # The checkout still has the previously green tag.
+        raise AssertionError(f"Unexpected git call: {args}")
+
+    def fake_api(path):
+        if path == "git/ref/tags/v1.2.3":
+            remote_calls.append(path)
+            if state["changed"]:
+                if change == "deleted":
+                    raise urllib.error.HTTPError(
+                        "https://api.github.com/", 404, "Not Found", None, None
+                    )
+                if change == "network":
+                    raise urllib.error.URLError("synthetic network failure")
+                if change == "timeout":
+                    raise TimeoutError("synthetic timeout")
+            moved = state["changed"] and change == "moved"
+            target = "c" * 40 if moved else sha
+            return {
+                "ref": "refs/tags/v1.2.3",
+                "object": {
+                    "type": "tag" if annotated else "commit",
+                    "sha": ("e" if moved else "d") * 40 if annotated else target,
+                },
+            }
+        if path in {f"git/tags/{'d' * 40}", f"git/tags/{'e' * 40}"}:
+            remote_calls.append(path)
+            return {
+                "sha": path.rsplit("/", 1)[1],
+                "object": {
+                    "type": "commit",
+                    "sha": "c" * 40 if path.endswith("e" * 40) else sha,
+                },
+            }
+        if path == f"commits/{sha}/pulls?per_page=100":
+            return [
+                {
+                    "merged_at": "synthetic",
+                    "base": {"ref": "main"},
+                    "merge_commit_sha": sha,
+                }
+            ]
+        if path == "releases/tags/v1.2.3":
+            return {"draft": False, "prerelease": False, "published_at": "synthetic"}
+        if path == "branches/main":
+            return {
+                "protected": True,
+                "commit": {"sha": control},
+                "protection": {
+                    "required_status_checks": {
+                        "contexts": list(contracts.REQUIRED_CHECKS),
+                        "checks": [
+                            {"context": name, "app_id": 15368}
+                            for name in contracts.REQUIRED_CHECKS
+                        ],
+                    }
+                },
+            }
+        raise AssertionError(f"Unexpected API call: {path}")
+
+    monkeypatch.setattr(contracts, "git", fake_git)
+    monkeypatch.setattr(contracts, "api", fake_api)
+    monkeypatch.setattr(contracts.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        contracts, "git_file", lambda ref, path: b'APP_VERSION = "1.2.3"\n'
+    )
+    monkeypatch.setattr(contracts, "complete_checks", checked.append)
+    contracts.release_source()
+    initial_output = output.read_text()
+    assert f"sha={sha}\n" in initial_output
+    assert checked == [sha]
+
+    # Model the publish job's unchanged checkout after a successful first validation.
+    state["changed"] = True
+    monkeypatch.setenv("EXPECTED_SOURCE_SHA", sha)
+    if change == "unchanged":
+        contracts.release_source()
+        assert checked == [sha, sha]
+        assert output.read_text() == initial_output * 2
+    else:
+        error = {
+            "moved": ValueError,
+            "deleted": urllib.error.HTTPError,
+            "network": urllib.error.URLError,
+            "timeout": TimeoutError,
+        }[change]
+        with pytest.raises(error) as raised:
+            contracts.release_source()
+        if change == "moved":
+            assert "Release tag moved" in str(raised.value)
+        assert checked == [sha]
+        assert output.read_text() == initial_output
+    assert remote_calls.count("git/ref/tags/v1.2.3") == 2
+    assert all("refs/tags/" not in arg for args in git_calls for arg in args)
 
 
 def test_candidate_metadata_is_parsed_without_executing_candidate_code():

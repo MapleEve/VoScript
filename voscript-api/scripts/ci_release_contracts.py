@@ -370,6 +370,31 @@ def complete_checks(sha: str) -> None:
     print(f"Verified {len(REQUIRED_CHECKS)} exact-SHA checks for {sha}")
 
 
+def remote_tag_commit(tag: str) -> str:
+    # Read the exact remote ref on every validation; checkout tags may be stale.
+    ref = api(f"git/ref/tags/{tag}")
+    if not isinstance(ref, dict) or ref.get("ref") != f"refs/tags/{tag}":
+        raise ValueError("Remote release tag ref is missing or mismatched")
+    obj = ref.get("object")
+    seen = set()
+    for _ in range(16):
+        if not isinstance(obj, dict):
+            raise ValueError("Remote release tag object is missing")
+        sha = obj.get("sha")
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("Remote release tag object SHA is invalid")
+        if obj.get("type") == "commit":
+            return sha
+        if obj.get("type") != "tag" or sha in seen:
+            raise ValueError("Remote release tag does not resolve to a commit")
+        seen.add(sha)
+        annotated = api(f"git/tags/{sha}")
+        if not isinstance(annotated, dict) or annotated.get("sha") != sha:
+            raise ValueError("Remote annotated tag object SHA is mismatched")
+        obj = annotated.get("object")
+    raise ValueError("Remote release tag nesting exceeds the limit")
+
+
 def release_source() -> None:
     control = git("rev-parse", "HEAD")
     repository = os.environ["GITHUB_REPOSITORY"].lower()
@@ -386,11 +411,11 @@ def release_source() -> None:
     tag = event.get("inputs", {}).get("tag")
     if not tag or not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
         raise ValueError("A stable published version tag is required")
-    sha = git("rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
-    if not re.fullmatch(r"[0-9a-f]{40}", sha):
-        raise ValueError("Tag did not resolve to an immutable commit")
+    sha = remote_tag_commit(tag)
     if os.environ.get("EXPECTED_SOURCE_SHA", sha) != sha:
         raise ValueError("Release tag moved after read-only source validation")
+    if git("rev-parse", "--verify", f"{sha}^{{commit}}") != sha:
+        raise ValueError("Remote release tag did not resolve to an immutable commit")
     subprocess.run(
         ["git", "merge-base", "--is-ancestor", sha, "origin/main"], cwd=ROOT, check=True
     )

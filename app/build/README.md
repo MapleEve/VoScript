@@ -25,6 +25,14 @@ original encoding/newlines; installed bytes must still match the original or
 patched authenticated wheel member exactly. Unknown artifacts fail closed. The image retains a per-file audit
 manifest at `/usr/local/share/voscript/legacy-compat.json`.
 
+For pyannote.audio 3.3.2, the allowlisted segmentation task mixin imports the
+existing `infra.audio.io_compat.AudioMetaData` five-field record. TorchAudio
+[deprecated this class in 2.8 and removed it in 2.9](https://github.com/pytorch/audio/blob/v2.8.0/src/torchaudio/_internal/module_utils.py).
+This is a scoped consumer import adaptation, not a modification of the real
+`torchaudio` module or its DSP APIs. The fresh-process image smoke checks both
+the pipeline/task import chain and the mixin's metadata construction without
+models, network access or GPU use.
+
 The Torch update includes the `GHSA-rrmf-rvhw-rf47` fix in 2.13.0. It is not a
 claim that arbitrary model archives are safe: `torch.export.load` still documents
 pickle-based deserialization and must not receive untrusted input. The service

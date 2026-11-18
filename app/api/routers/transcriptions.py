@@ -15,7 +15,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 from threading import Thread
 from typing import Annotated
 
@@ -154,10 +154,10 @@ async def transcribe(
 
     job_id = f"tr_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
 
-    safe_filename = PurePosixPath(file.filename or "upload").name or "upload"
-    # Strip control chars before using the name in paths/logs — PurePosixPath.name
-    # preserves newlines and ANSI escapes which would otherwise enable log injection.
-    safe_filename = safe_log_filename(safe_filename) or "upload"
+    # Parse both separator styles, including Windows drives and UNC paths.
+    safe_filename = PureWindowsPath(file.filename or "upload").name or "upload"
+    # Keep the stored basename safe for paths, logs, and later downloads.
+    safe_filename = safe_log_filename(safe_filename).replace(":", "_") or "upload"
     save_path = UPLOADS_DIR / f"{job_id}_{safe_filename}"
 
     file_hash = None
@@ -360,13 +360,15 @@ async def download_audio(
     """Return the original uploaded audio file for this transcription."""
     data = _load_transcription_result(tr_id)
     filename = data.get("filename")
+    # Normalizing persisted paths could select a different file with the same basename.
     if (
         not isinstance(filename, str)
         or not filename
         or filename in {".", ".."}
         or PurePosixPath(filename).name != filename
         or "\\" in filename
-        or "\x00" in filename
+        or ":" in filename
+        or safe_log_filename(filename) != filename
     ):
         raise HTTPException(400, "Invalid audio filename")
     uploads_root = UPLOADS_DIR.resolve()

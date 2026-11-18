@@ -101,6 +101,51 @@ def test_patch_rejects_unknown_source_structure_and_invalid_python():
             patcher.adapt_source(malformed, replacements, "synthetic.py")
 
 
+def test_segmentation_metadata_import_is_scoped_and_preserves_legacy_fields(
+    monkeypatch,
+):
+    from infra.audio.io_compat import AudioMetaData
+
+    member = "pyannote/audio/tasks/segmentation/mixins.py"
+    replacements = patcher.PACKAGES["pyannote.audio"]["files"][member]
+    assert replacements == (
+        (
+            "from torchaudio import AudioMetaData\n",
+            "from infra.audio.io_compat import AudioMetaData\n",
+            1,
+        ),
+    )
+    torchaudio = ModuleType("torchaudio")
+    torchaudio.functional = object()
+    before = vars(torchaudio).copy()
+    monkeypatch.setitem(sys.modules, "torchaudio", torchaudio)
+    original = (
+        b"from torchaudio import AudioMetaData\n"
+        b"metadata = AudioMetaData(16000, 320, 2, 16, 'PCM_S')\n"
+    )
+    patched = patcher.adapt_source(original, replacements, member)
+    namespace = {}
+    exec(compile(patched, member, "exec"), namespace)
+    assert namespace["AudioMetaData"] is AudioMetaData
+    assert namespace["metadata"] == AudioMetaData(16000, 320, 2, 16, "PCM_S")
+    assert vars(torchaudio) == before
+    assert "AudioMetaData" not in vars(torchaudio)
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        b"from torchaudio.backend.common import AudioMetaData\n",
+        b"from torchaudio import AudioMetaData\n" * 2,
+    ],
+)
+def test_segmentation_metadata_patch_rejects_unknown_imports(original):
+    member = "pyannote/audio/tasks/segmentation/mixins.py"
+    replacements = patcher.PACKAGES["pyannote.audio"]["files"][member]
+    with pytest.raises(ValueError, match="Unknown upstream"):
+        patcher.adapt_source(original, replacements, member)
+
+
 def _synthetic_install(tmp_path, monkeypatch, original=b"import torchaudio\n"):
     member = "synthetic/io.py"
     wheel_name = "synthetic-0.0.1-py3-none-any.whl"

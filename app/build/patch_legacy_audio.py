@@ -39,6 +39,13 @@ PACKAGES = {
             ),
             "pyannote/audio/core/model.py": (HUB_IMPORT,),
             "pyannote/audio/core/pipeline.py": (HUB_IMPORT,),
+            "pyannote/audio/tasks/segmentation/mixins.py": (
+                (
+                    "from torchaudio import AudioMetaData\n",
+                    "from infra.audio.io_compat import AudioMetaData\n",
+                    1,
+                ),
+            ),
             "pyannote/audio/pipelines/speaker_verification.py": (
                 (
                     "from pyannote.audio.core.io import AudioFile\n",

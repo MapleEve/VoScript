@@ -30,17 +30,28 @@ MEDIA_EXTENSIONS = {
     ".webm",
 }
 TEXT_EXTENSIONS = {
+    ".cfg",
+    ".cjs",
+    ".css",
+    ".cts",
     ".dockerignore",
     ".env",
     ".gitignore",
     ".ini",
     ".html",
+    ".js",
     ".json",
+    ".jsx",
+    ".map",
     ".md",
+    ".mjs",
+    ".mts",
     ".py",
     ".rst",
     ".sh",
     ".toml",
+    ".ts",
+    ".tsx",
     ".txt",
     ".yaml",
     ".yml",
@@ -488,6 +499,7 @@ def raw_secret_token_finding(path: str, line_no: int, line: str) -> Finding | No
 def diagnostic_path(path: str, extra_rules: Sequence[Rule] = ()) -> str:
     if (
         not path.isprintable()
+        or is_internal_document(Path(path))
         or secret_assignment_finding(path, 1, path)
         or raw_secret_token_finding(path, 1, path)
         or any(rule.pattern.search(path) for rule in (*LINE_RULES, *extra_rules))

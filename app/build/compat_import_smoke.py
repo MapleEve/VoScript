@@ -12,13 +12,18 @@ import sys
 
 SMOKES = {
     "pyannote": """
+import torchaudio
+assert not hasattr(torchaudio, 'AudioMetaData')
 from pyannote.audio import Model, Pipeline
 from pyannote.audio.core import io
+from pyannote.audio.tasks.segmentation import mixins
 from infra.audio import io_compat
 from infra.huggingface_compat import hf_hub_download
 import pyannote.audio.core.model as model
 import pyannote.audio.core.pipeline as pipeline
 assert io.torchaudio is io_compat
+assert io.torchaudio.functional is torchaudio.functional
+assert mixins.AudioMetaData is io_compat.AudioMetaData
 assert model.hf_hub_download is hf_hub_download
 assert pipeline.hf_hub_download is hf_hub_download
 assert io.Audio().backend == 'soundfile'
@@ -33,6 +38,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from pyannote.audio.pipelines import speaker_verification
 from infra.audio.speechbrain_compat import from_hparams
+prepared = SimpleNamespace(prepared_data={
+    'audio-path': ['synthetic.wav'],
+    'audio-info': [{'sample_rate': 16000, 'num_frames': 400,
+                    'num_channels': 2, 'bits_per_sample': 16}],
+    'audio-encoding': ['PCM_S'],
+})
+prepared_file = mixins.SegmentationTask.get_file(prepared, 0)
+assert prepared_file['audio'] == 'synthetic.wav'
+assert prepared_file['torchaudio.info'] == io_compat.AudioMetaData(16000, 400, 2, 16, 'PCM_S')
+assert not hasattr(torchaudio, 'AudioMetaData')
 assert speaker_verification.SPEECHBRAIN_IS_AVAILABLE
 assert speaker_verification.speechbrain_from_hparams is from_hparams
 calls = []

@@ -19,8 +19,10 @@ are not implied.
   replacing third-party modules. Upgrades do not imply all transitive
   dependencies are free of known vulnerabilities.
 - Original-audio downloads accept only a single basename inside the upload
-  directory and validate resolved paths, rejecting traversal, backslashes, and
-  null bytes so tampered persisted filenames cannot select arbitrary files.
+  directory and validate resolved paths, rejecting traversal, backslashes,
+  colons, and control characters so tampered persisted filenames cannot select
+  arbitrary files. Uploads normalize POSIX and Windows paths to safe basenames;
+  downloads do not normalize unsafe legacy metadata into a different file.
 - New-job admission defaults to 200 unfinished jobs, four in-flight unique audio
   hashes, and at least 1 GiB free on the data disk. Rejections return `503` and
   clean up this upload; completed and in-flight duplicates can still reuse work.
@@ -54,7 +56,9 @@ are not implied.
   entry point on `main`, with an existing stable published tag as input. Creating
   a tag or publishing a GitHub Release alone does not start image publication.
   The workflow validates the exact integrated source and required CI evidence,
-  then audits and smoke-checks the same image before registry writes.
+  then audits and smoke-checks the same image before registry writes. Its final
+  revalidation resolves the current remote tag again, including annotated tags;
+  moved or missing refs and lookup errors block publication.
 - The supported image uses Python 3.11, official PyTorch CUDA 12.6 wheels, the
   matching Rust extension, and authenticated compatibility adaptations. Native
   installations are not covered by that image gate; requirements alone are not
