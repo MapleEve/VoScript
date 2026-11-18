@@ -247,22 +247,6 @@ requires cohort size >=10. Public documentation records only the behavioral
 conclusion, not real task names, sample names, job IDs, speaker IDs, hosts, or
 paths.
 
-## Manual Heavy CI
-
-Heavy CI runs automatically on PR `opened`, `reopened`, and `ready_for_review`
-events and pushes to `main`; later PR updates require an explicit dispatch.
-For same-repository candidate self-validation, select the candidate branch as
-the workflow ref and set input `ref` to its exact 40-character HEAD SHA.
-The workflow SHA, run SHA, and input SHA must match. Native Actions checks
-(`resolve-source`, `rust-wheel`, `docker-packaging`) then belong to that HEAD;
-the candidate receives no `checks: write`, trusted target proof, or target-check
-reporter execution. Moving the branch requires a new exact-SHA dispatch.
-
-Only a dispatch from `main` may test another exact target SHA and produce the
-trusted target proof and report checks. Candidate runs cannot satisfy the release
-verifier: stable publication still requires an integrated `main` PR source and
-all nine required checks for that exact merged SHA, not pre-merge candidate greens.
-
 ## Related Docs
 
 - [Quickstart](./quickstart.en.md)
