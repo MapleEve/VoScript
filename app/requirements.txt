@@ -32,6 +32,8 @@ pandas>=2.2,<3.0
 # image build. Hub 1.x no longer accepts use_auth_token directly.
 huggingface_hub==1.22.0
 requests==2.33.0
+# CVE-2026-45409: do not reuse a vulnerable idna from an existing environment.
+idna==3.15
 urllib3==2.8.0
 Pillow==13.0.0
 matplotlib>=3.7

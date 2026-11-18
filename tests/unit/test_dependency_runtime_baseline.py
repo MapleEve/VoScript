@@ -20,6 +20,26 @@ def _dockerfile_text() -> str:
     return (root / "app" / "Dockerfile").read_text()
 
 
+def test_idna_runtime_pin_excludes_cve_2026_45409():
+    root = Path(__file__).resolve().parents[2]
+    lines = _requirements_lines()
+    constraints = (
+        (root / "app" / "requirements.constraints.txt").read_text().splitlines()
+    )
+    docker_constraints = (
+        (root / "app" / "requirements.docker.constraints.txt").read_text().splitlines()
+    )
+
+    assert "idna==3.15" in lines
+    assert "idna==3.15" in constraints
+    assert "-c requirements.constraints.txt" in lines
+    assert "-c requirements.constraints.txt" in docker_constraints
+    assert (
+        "ENV PIP_CONSTRAINT=/app/requirements.docker.constraints.txt"
+        in _dockerfile_text()
+    )
+
+
 def test_faster_whisper_runtime_stays_on_cudnn9_compatible_ctranslate2():
     lines = _requirements_lines()
 

@@ -18,6 +18,7 @@ deepfilterlib==0.5.6
 transformers==5.10.1
 huggingface_hub==1.22.0
 requests==2.33.0
+idna==3.15
 urllib3==2.8.0
 Pillow==13.0.0
 pip==26.3
