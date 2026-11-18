@@ -164,6 +164,55 @@ jobs:
           path: ${{ runner.temp }}/voscript-image-audit
           if-no-files-found: warn
 
+  report-candidate-statuses:
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    needs: [resolve-source, rust-wheel, docker-packaging]
+    permissions:
+      statuses: write
+    steps:
+      - name: Mirror candidate heavy job results on the same workflow SHA
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0, node24
+        env:
+          TARGET_SHA: ${{ inputs.ref }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RESULTS: ${{ toJSON(needs) }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const sha = process.env.TARGET_SHA;
+            const repository = `${context.repo.owner}/${context.repo.repo}`;
+            const workflowRef = `${repository}/.github/workflows/rust-foundation-heavy.yml@${context.ref}`;
+            if (
+              context.eventName !== "workflow_dispatch" ||
+              !context.ref.startsWith("refs/heads/") || context.ref === "refs/heads/main" ||
+              context.payload.repository?.full_name !== repository ||
+              process.env.GITHUB_WORKFLOW_REF !== workflowRef ||
+              !/^[0-9a-f]{40}$/.test(sha) ||
+              sha !== context.sha || sha !== process.env.GITHUB_WORKFLOW_SHA
+            ) throw new Error("Candidate statuses require the same repository, branch and workflow SHA");
+            const results = JSON.parse(process.env.RESULTS);
+            if (
+              results["resolve-source"]?.result === "success" &&
+              results["resolve-source"].outputs?.["source-sha"] !== sha
+            ) throw new Error("Resolver target SHA mismatch");
+            const attempt = process.env.RUN_ATTEMPT;
+            if (!/^[1-9][0-9]*$/.test(attempt)) throw new Error("Invalid run attempt");
+            const runUrl = `${context.serverUrl}/${repository}/actions/runs/${context.runId}/attempts/${attempt}`;
+            let failed = false;
+            for (const name of ["resolve-source", "rust-wheel", "docker-packaging"]) {
+              const result = results[name]?.result ?? "missing";
+              const success = result === "success";
+              failed ||= !success;
+              await github.rest.repos.createCommitStatus({
+                ...context.repo, sha, context: name,
+                state: success ? "success" : "failure",
+                target_url: runUrl,
+                description: `Heavy ${name}: ${result} (attempt ${attempt})`,
+              });
+            }
+            if (failed) core.setFailed("One or more candidate heavy jobs did not succeed");
+
   report-target-checks:
     if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.resolve-source.outputs.source-sha != '' }}
     runs-on: ubuntu-latest

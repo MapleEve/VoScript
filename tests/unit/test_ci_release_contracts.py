@@ -106,6 +106,89 @@ def test_heavy_first_round_policy_and_manual_target_binding():
     assert "external_id:" in str(reporter)
 
 
+def test_candidate_status_reporter_is_manual_self_only_and_least_privilege():
+    heavy = workflow("rust-foundation-heavy.yml")
+    assert set(heavy["on"]) == {"pull_request", "push", "workflow_dispatch"}
+    assert heavy["permissions"] == {"contents": "read"}
+    jobs = heavy["jobs"]
+    reporter = jobs["report-candidate-statuses"]
+    assert reporter["if"] == (
+        "${{ always() && github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' }}"
+    )
+    assert reporter["needs"] == ["resolve-source", "rust-wheel", "docker-packaging"]
+    assert reporter["permissions"] == {"statuses": "write"}
+    assert [
+        name
+        for name, job in jobs.items()
+        if job.get("permissions", {}).get("statuses") == "write"
+    ] == ["report-candidate-statuses"]
+    assert [
+        name
+        for name, job in jobs.items()
+        if job.get("permissions", {}).get("checks") == "write"
+    ] == ["report-target-checks"]
+    assert len(reporter["steps"]) == 1
+    step = reporter["steps"][0]
+    assert step["uses"] == (
+        "actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd"
+    )
+    assert step["env"] == {
+        "TARGET_SHA": "${{ inputs.ref }}",
+        "RUN_ATTEMPT": "${{ github.run_attempt }}",
+        "RESULTS": "${{ toJSON(needs) }}",
+    }
+    assert step["with"]["github-token"] == "${{ github.token }}"
+    assert "secrets." not in str(reporter)
+
+
+def test_candidate_status_script_rechecks_identity_and_mirrors_real_needs():
+    script = workflow("rust-foundation-heavy.yml")["jobs"]["report-candidate-statuses"][
+        "steps"
+    ][0]["with"]["script"]
+    guard, reporting = script.split("const results = JSON.parse(process.env.RESULTS);")
+    for binding in (
+        "const sha = process.env.TARGET_SHA;",
+        "const repository = `${context.repo.owner}/${context.repo.repo}`;",
+        "const workflowRef = `${repository}/.github/workflows/rust-foundation-heavy.yml@${context.ref}`;",
+        'context.eventName !== "workflow_dispatch" ||',
+        '!context.ref.startsWith("refs/heads/") || context.ref === "refs/heads/main" ||',
+        "context.payload.repository?.full_name !== repository ||",
+        "process.env.GITHUB_WORKFLOW_REF !== workflowRef ||",
+        "!/^[0-9a-f]{40}$/.test(sha) ||",
+        "sha !== context.sha || sha !== process.env.GITHUB_WORKFLOW_SHA",
+        ') throw new Error("Candidate statuses require the same repository, branch and workflow SHA");',
+    ):
+        assert binding in guard
+    validation, publish = reporting.split("let failed = false;")
+    assert (
+        'results["resolve-source"]?.result === "success" &&\n'
+        '  results["resolve-source"].outputs?.["source-sha"] !== sha\n'
+        ') throw new Error("Resolver target SHA mismatch");'
+    ) in validation
+    assert "const attempt = process.env.RUN_ATTEMPT;" in validation
+    assert (
+        'if (!/^[1-9][0-9]*$/.test(attempt)) throw new Error("Invalid run attempt");'
+    ) in validation
+    assert (
+        "const runUrl = `${context.serverUrl}/${repository}/actions/runs/${context.runId}/attempts/${attempt}`;"
+    ) in validation
+    assert (
+        'for (const name of ["resolve-source", "rust-wheel", "docker-packaging"]) {'
+    ) in publish
+    assert 'const result = results[name]?.result ?? "missing";' in publish
+    assert 'const success = result === "success";' in publish
+    assert "failed ||= !success;" in publish
+    assert script.count("github.rest.") == 1
+    assert "await github.rest.repos.createCommitStatus({" in publish
+    assert "...context.repo, sha, context: name," in publish
+    assert 'state: success ? "success" : "failure",' in publish
+    assert "target_url: runUrl," in publish
+    assert "${result} (attempt ${attempt})" in publish
+    assert (
+        'if (failed) core.setFailed("One or more candidate heavy jobs did not succeed");'
+    ) in publish
+
+
 @pytest.mark.parametrize(
     "overrides,accepted",
     [
